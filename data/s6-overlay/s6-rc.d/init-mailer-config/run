@@ -24,6 +24,21 @@ dockerize \
   -template $TEMPLATES_DIR/opendkim/signing.table.tmpl:/etc/opendkim/signing.table \
   -template $TEMPLATES_DIR/opendkim/trusted.hosts.tmpl:/etc/opendkim/trusted.hosts
 
+echo "Creating temporary self-signed certificate for $JMAIL_ORIGIN"
+echo "Copy everything between the dashed lines into your mail client to trust the certificate"
+openssl req -x509 -noenc -sha384 -days 3650 -utf8 \
+  -newkey ec:<(openssl ecparam -name secp384r1) \
+  -keyout $TEMPLATES_DIR/postfix/ssl/server.key \
+  -out $TEMPLATES_DIR/postfix/ssl/server.crt \
+  -subj "/O=Jmail Self-Signed Server Cert/CN=$JMAIL_ORIGIN" \
+  -addext "basicConstraints=critical,CA:FALSE" \
+  -addext="extendedKeyUsage=critical,serverAuth" \
+  -addext "keyUsage=critical,nonRepudiation,digitalSignature,keyEncipherment,keyAgreement" \
+  -addext "subjectAltName=DNS:$JMAIL_ORIGIN"
+
+cat $TEMPLATES_DIR/postfix/ssl/server.crt
+echo "-----"
+
 POSTFIX_SSL_DIR=/etc/postfix/ssl
 if [[ ! -d "${POSTFIX_SSL_DIR}" ]]; then
   cp -R /etc/templates/postfix/ssl $POSTFIX_SSL_DIR
@@ -38,7 +53,7 @@ OPENDKIM_KEYS_DIR=/etc/opendkim/keys/$JMAIL_ORIGIN
 if [[ ! -d "${OPENDKIM_KEYS_DIR}" ]]; then
   echo "Creating DKIM keys for $JMAIL_ORIGIN"
   mkdir -p $OPENDKIM_KEYS_DIR
-  opendkim-genkey -b 2048 -d $JMAIL_ORIGIN -D $OPENDKIM_KEYS_DIR -s sendonly -v
+  opendkim-genkey -b 1024 -d $JMAIL_ORIGIN -D $OPENDKIM_KEYS_DIR -s sendonly
   chown -R opendkim: $OPENDKIM_KEYS_DIR/sendonly.private
 fi
 
