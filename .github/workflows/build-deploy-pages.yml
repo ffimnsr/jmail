@@ -1,9 +1,9 @@
-name: deploy-pages
+name: build-deploy-pages
 
 on:
   push:
-    branches:
-      - main
+    tags:
+      - 'release-*.*.*'
   workflow_dispatch:
 
 permissions:
