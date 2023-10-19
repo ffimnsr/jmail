@@ -1,15 +1,5 @@
 FROM alpine:latest
 
-LABEL org.opencontainers.image.title jmail
-LABEL org.opencontainers.image.description Send-only SMTP mail server
-LABEL org.opencontainers.image.licenses Apache-2.0
-LABEL org.opencontainers.image.url https://github.com/ffimnsr/jmail
-LABEL org.opencontainers.image.source https://github.com/ffimnsr/jmail
-LABEL org.opencontainers.image.documentation https://github.com/ffimnsr/jmail/README.md
-LABEL org.opencontainers.image.base.name docker.io/library/alpine:latest
-LABEL org.opencontainers.image.version <version>
-LABEL org.opencontainers.image.revision <revision>
-
 ENV DOCKERIZE_VERSION v0.7.0
 ENV JMAIL_HOSTNAME example.com
 ENV JMAIL_ORIGIN example.com
