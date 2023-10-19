@@ -1,0 +1,45 @@
+#!/usr/bin/with-contenv bash
+
+set -e
+
+addgroup postfix opendkim
+
+mkdir -p /var/spool/postfix/pid \
+  && chown -R 0:0 /var/spool/postfix/pid
+
+mkdir -p /var/spool/postfix/opendkim \
+  && chown -R opendkim:postfix /var/spool/postfix/opendkim
+
+mkdir /run/opendkim \
+  && chown -R opendkim:opendkim /run/opendkim
+
+TEMPLATES_DIR=/etc/templates
+dockerize \
+  -template $TEMPLATES_DIR/postfix/aliases.tmpl:/etc/aliases \
+  -template $TEMPLATES_DIR/postfix/generic.tmpl:/etc/postfix/generic \
+  -template $TEMPLATES_DIR/postfix/main.cf.tmpl:/etc/postfix/main.cf \
+  -template $TEMPLATES_DIR/postfix/master.cf.tmpl:/etc/postfix/master.cf \
+  -template $TEMPLATES_DIR/opendkim/opendkim.conf.tmpl:/etc/opendkim/opendkim.conf \
+  -template $TEMPLATES_DIR/opendkim/key.table.tmpl:/etc/opendkim/key.table \
+  -template $TEMPLATES_DIR/opendkim/signing.table.tmpl:/etc/opendkim/signing.table \
+  -template $TEMPLATES_DIR/opendkim/trusted.hosts.tmpl:/etc/opendkim/trusted.hosts
+
+POSTFIX_SSL_DIR=/etc/postfix/ssl
+if [[ ! -d "${POSTFIX_SSL_DIR}" ]]; then
+  cp -R /etc/templates/postfix/ssl $POSTFIX_SSL_DIR
+fi
+
+postmap /etc/postfix/canonical
+postmap /etc/postfix/generic
+newaliases
+
+# TODO: Add support for Ed25519 dkim keys
+OPENDKIM_KEYS_DIR=/etc/opendkim/keys/$JMAIL_ORIGIN
+if [[ ! -d "${OPENDKIM_KEYS_DIR}" ]]; then
+  echo "Creating DKIM keys for $JMAIL_ORIGIN"
+  mkdir -p $OPENDKIM_KEYS_DIR
+  opendkim-genkey -b 2048 -d $JMAIL_ORIGIN -D $OPENDKIM_KEYS_DIR -s sendonly -v
+  chown -R opendkim: $OPENDKIM_KEYS_DIR/sendonly.private
+fi
+
+cat $OPENDKIM_KEYS_DIR/sendonly.txt

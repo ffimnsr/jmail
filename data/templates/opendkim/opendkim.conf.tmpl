@@ -1,0 +1,24 @@
+BaseDirectory           /run/opendkim
+
+Syslog                  yes
+SyslogSuccess           yes
+
+Canonicalization        relaxed/simple
+
+# Change domain to `s` as there's no inbound email to verify.
+Mode                    s
+SubDomains              no
+
+Domain                  {{ .Env.JMAIL_ORIGIN }}
+
+# Map domains in From addresses to keys used to sign message.
+KeyTable                refile:/etc/opendkim/key.table
+SigningTable            refile:/etc/opendkim/signing.table
+
+Socket                  local:/var/spool/postfix/opendkim/opendkim.sock
+
+ReportAddress           postmaster@{{ .Env.JMAIL_ORIGIN }}
+SendReports             yes
+UserID                  opendkim
+
+InternalHosts           refile:/etc/opendkim/trusted.hosts

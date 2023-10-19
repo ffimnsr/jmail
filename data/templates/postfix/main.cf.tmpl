@@ -1,0 +1,51 @@
+maillog_file = /dev/stdout
+compatibility_level = 3.8
+biff = no
+append_dot_mydomain = no
+allow_percent_hack = no
+
+myhostname = {{ .Env.JMAIL_HOSTNAME }}
+myorigin = {{ .Env.JMAIL_ORIGIN }}
+mydestination = localhost.local, localhost.localdomain, localhost
+mynetworks = 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 127.0.0.0/8
+
+# Incoming
+smtpd_banner = $myhostname ESMTP
+smtpd_delay_reject = yes
+smtpd_relay_restrictions = permit_mynetworks reject
+smtpd_recipient_restrictions = permit_mynetworks reject
+smtpd_tls_cert_file = /etc/templates/postfix/ssl/server-chain.crt
+smtpd_tls_key_file = /etc/templates/postfix/ssl/server.key
+smtpd_tls_security_level = encrypt
+smtpd_tls_session_cache_database = lmdb:${data_directory}/smtpd_scache
+smtpd_tls_auth_only = yes
+smtpd_tls_loglevel = 1
+smtpd_milters = local:opendkim/opendkim.sock
+
+# Outgoing
+smtp_generic_maps = lmdb:/etc/postfix/generic
+smtp_tls_CApath = /etc/ssl/certs
+smtp_tls_security_level = encrypt
+smtp_tls_session_cache_database = lmdb:${data_directory}/smtp_scache
+smtp_tls_loglevel = 1
+
+# Postscreen
+postscreen_access_list = permit_mynetworks
+postscreen_blacklist_action = drop
+postscreen_greet_action = enforce
+
+# Milters
+milter_default_action = accept
+milter_protocol = 6
+non_smtpd_milters = $smtpd_milters
+
+alias_maps = lmdb:/etc/aliases
+alias_database = lmdb:/etc/aliases
+relayhost =
+mailbox_size_limit = 0
+recipient_delimiter = +
+inet_interfaces = all
+inet_protocols = ipv4
+readme_directory = no
+
+disable_vrfy_command = yes
