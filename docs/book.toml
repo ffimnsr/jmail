@@ -1,0 +1,6 @@
+[book]
+authors = ["Edward Fitz Abucay"]
+language = "en"
+multilingual = false
+src = "src"
+title = "Jmail Documentation"
