@@ -18,3 +18,6 @@ ReportAddress           postmaster@{{ .Env.JMAIL_ORIGIN }}
 SendReports             yes
 InternalHosts           refile:/etc/opendkim/trusted.hosts
 UserID                  root:root
+
+# Needed on alpine linux
+RequireSafeKeys         no
