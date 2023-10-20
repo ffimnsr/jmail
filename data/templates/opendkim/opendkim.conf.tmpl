@@ -3,11 +3,11 @@ SyslogSuccess           yes
 
 Canonicalization        relaxed/simple
 
+Domain                  {{ .Env.JMAIL_ORIGIN }}
+
 # Change domain to `s` as there's no inbound email to verify.
 Mode                    s
 SubDomains              no
-
-Domain                  {{ .Env.JMAIL_ORIGIN }}
 
 # Map domains in From addresses to keys used to sign message.
 KeyTable                refile:/etc/opendkim/key.table
@@ -17,3 +17,4 @@ Socket                  inet:8892@localhost
 ReportAddress           postmaster@{{ .Env.JMAIL_ORIGIN }}
 SendReports             yes
 InternalHosts           refile:/etc/opendkim/trusted.hosts
+UserID                  root:root

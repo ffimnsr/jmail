@@ -5,10 +5,7 @@ set -e
 addgroup postfix opendkim
 
 mkdir -p /var/spool/postfix/pid \
-  && chown -R postfix:0 /var/spool/postfix/pid
-
-mkdir /run/opendkim \
-  && chown -R opendkim:0 /run/opendkim
+  && chown -R 0:0 /var/spool/postfix/pid
 
 TEMPLATES_DIR=/etc/templates
 dockerize \
