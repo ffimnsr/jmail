@@ -10,6 +10,7 @@ mkdir -p /var/spool/postfix/pid \
 TEMPLATES_DIR=/etc/templates
 dockerize \
   -template $TEMPLATES_DIR/postfix/aliases.tmpl:/etc/postfix/aliases \
+  -template $TEMPLATES_DIR/postfix/canonical.tmpl:/etc/postfix/canonical \
   -template $TEMPLATES_DIR/postfix/generic.tmpl:/etc/postfix/generic \
   -template $TEMPLATES_DIR/postfix/main.cf.tmpl:/etc/postfix/main.cf \
   -template $TEMPLATES_DIR/postfix/master.cf.tmpl:/etc/postfix/master.cf \
