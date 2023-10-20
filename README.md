@@ -74,7 +74,9 @@ This are the things you need to do before going to production:
   ```
   v=DMARC1;  p=reject; sp=reject; rua=mailto:catchall@<mail-server-hostname>
   ```
+- [ ] Check if your IP is in email blacklists. De-list it.
 - [ ] Test your emails on https://mail-tester.com.
+
 
 ## License
 jmail is licensed under the Apache-2.0 License. See [LICENSE](LICENSE) file for more details.
