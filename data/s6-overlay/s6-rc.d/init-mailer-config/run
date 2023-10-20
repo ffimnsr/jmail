@@ -5,13 +5,10 @@ set -e
 addgroup postfix opendkim
 
 mkdir -p /var/spool/postfix/pid \
-  && chown -R 0:0 /var/spool/postfix/pid
-
-mkdir -p /var/spool/postfix/opendkim \
-  && chown -R 0:0 /var/spool/postfix/opendkim
+  && chown -R postfix:0 /var/spool/postfix/pid
 
 mkdir /run/opendkim \
-  && chown -R 0:0 /run/opendkim
+  && chown -R opendkim:0 /run/opendkim
 
 TEMPLATES_DIR=/etc/templates
 dockerize \
@@ -22,7 +19,8 @@ dockerize \
   -template $TEMPLATES_DIR/opendkim/opendkim.conf.tmpl:/etc/opendkim/opendkim.conf \
   -template $TEMPLATES_DIR/opendkim/key.table.tmpl:/etc/opendkim/key.table \
   -template $TEMPLATES_DIR/opendkim/signing.table.tmpl:/etc/opendkim/signing.table \
-  -template $TEMPLATES_DIR/opendkim/trusted.hosts.tmpl:/etc/opendkim/trusted.hosts
+  -template $TEMPLATES_DIR/opendkim/trusted.hosts.tmpl:/etc/opendkim/trusted.hosts \
+  -template $TEMPLATES_DIR/scripts/test-mail.sh.tmpl:/usr/local/bin/test-mail.sh
 
 echo "Creating temporary self-signed certificate for $JMAIL_ORIGIN"
 echo "Copy everything between the dashed lines into your mail client to trust the certificate"

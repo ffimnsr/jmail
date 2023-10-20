@@ -1,5 +1,3 @@
-BaseDirectory           /run/opendkim
-
 Syslog                  yes
 SyslogSuccess           yes
 
@@ -15,9 +13,7 @@ Domain                  {{ .Env.JMAIL_ORIGIN }}
 KeyTable                refile:/etc/opendkim/key.table
 SigningTable            refile:/etc/opendkim/signing.table
 
-Socket                  local:/var/spool/postfix/opendkim/opendkim.sock
-
+Socket                  inet:8892@localhost
 ReportAddress           postmaster@{{ .Env.JMAIL_ORIGIN }}
 SendReports             yes
-
 InternalHosts           refile:/etc/opendkim/trusted.hosts

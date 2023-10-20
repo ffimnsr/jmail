@@ -20,7 +20,6 @@ smtpd_tls_security_level = encrypt
 smtpd_tls_session_cache_database = lmdb:${data_directory}/smtpd_scache
 smtpd_tls_auth_only = yes
 smtpd_tls_loglevel = 1
-smtpd_milters = local:opendkim/opendkim.sock
 
 # Outgoing
 smtp_generic_maps = lmdb:/etc/postfix/generic
@@ -37,6 +36,7 @@ postscreen_greet_action = enforce
 # Milters
 milter_default_action = accept
 milter_protocol = 6
+smtpd_milters = inet:127.0.0.1:8892
 non_smtpd_milters = $smtpd_milters
 
 alias_maps = lmdb:/etc/postfix/aliases

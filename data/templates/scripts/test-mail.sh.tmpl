@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+
+set -e
+
+echo "This is the body of an encrypted email" | mail -s "This is the subject line" {{ .Env.JMAIL_ROOT_EMAIL }}
