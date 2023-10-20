@@ -39,8 +39,8 @@ milter_default_action = accept
 milter_protocol = 6
 non_smtpd_milters = $smtpd_milters
 
-alias_maps = lmdb:/etc/aliases
-alias_database = lmdb:/etc/aliases
+alias_maps = lmdb:/etc/postfix/aliases
+alias_database = lmdb:/etc/postfix/aliases
 relayhost =
 mailbox_size_limit = 0
 recipient_delimiter = +

@@ -9,7 +9,7 @@ ENV S6_BEHAVIOUR_IF_STAGE2_FAILS 2
 RUN apk add --no-cache \
   postfix opendkim opendkim-utils \
   ca-certificates tzdata bash \
-  musl musl-utils s6-overlay
+  mailx musl musl-utils s6-overlay
 
 RUN wget -O - \
   https://github.com/jwilder/dockerize/releases/download/$DOCKERIZE_VERSION/dockerize-linux-amd64-$DOCKERIZE_VERSION.tar.gz | tar xzf - -C /usr/local/bin
