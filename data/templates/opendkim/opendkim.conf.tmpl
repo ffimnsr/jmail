@@ -19,6 +19,5 @@ Socket                  local:/var/spool/postfix/opendkim/opendkim.sock
 
 ReportAddress           postmaster@{{ .Env.JMAIL_ORIGIN }}
 SendReports             yes
-UserID                  opendkim
 
 InternalHosts           refile:/etc/opendkim/trusted.hosts

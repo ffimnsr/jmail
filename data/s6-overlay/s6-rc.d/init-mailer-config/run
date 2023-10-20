@@ -8,10 +8,10 @@ mkdir -p /var/spool/postfix/pid \
   && chown -R 0:0 /var/spool/postfix/pid
 
 mkdir -p /var/spool/postfix/opendkim \
-  && chown -R opendkim:postfix /var/spool/postfix/opendkim
+  && chown -R 0:0 /var/spool/postfix/opendkim
 
 mkdir /run/opendkim \
-  && chown -R opendkim:opendkim /run/opendkim
+  && chown -R 0:0 /run/opendkim
 
 TEMPLATES_DIR=/etc/templates
 dockerize \
@@ -54,7 +54,7 @@ if [[ ! -d "${OPENDKIM_KEYS_DIR}" ]]; then
   echo "Creating DKIM keys for $JMAIL_ORIGIN"
   mkdir -p $OPENDKIM_KEYS_DIR
   opendkim-genkey -b 1024 -d $JMAIL_ORIGIN -D $OPENDKIM_KEYS_DIR -s sendonly
-  chown -R opendkim: $OPENDKIM_KEYS_DIR/sendonly.private
+  chown -R 0:0 $OPENDKIM_KEYS_DIR/sendonly.private
 fi
 
 cat $OPENDKIM_KEYS_DIR/sendonly.txt

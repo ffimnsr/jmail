@@ -1,9 +1,9 @@
-name: build-push-release
+name: build-push-release-images
 on:
   push:
-    tags: 
+    tags:
       - 'release-*.*.*'
-    
+
 env:
   # Use docker.io for Docker Hub if empty
   REGISTRY: ghcr.io
