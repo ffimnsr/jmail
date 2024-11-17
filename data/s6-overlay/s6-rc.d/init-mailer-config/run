@@ -41,6 +41,12 @@ if [[ ! -d "${POSTFIX_SSL_DIR}" ]]; then
   cp -R /etc/templates/postfix/ssl $POSTFIX_SSL_DIR
 fi
 
+POSTFIX_SSL_GENERATE_FILE="${POSTFIX_SSL_DIR}/.generate"
+if [[ -f "${POSTFIX_SSL_GENERATE_FILE}" ]]; then
+  cp -R /etc/templates/postfix/ssl $POSTFIX_SSL_DIR
+  rm -f "${POSTFIX_SSL_GENERATE_FILE}"
+fi
+
 postmap /etc/postfix/canonical
 postmap /etc/postfix/generic
 newaliases
@@ -52,6 +58,14 @@ if [[ ! -d "${OPENDKIM_KEYS_DIR}" ]]; then
   mkdir -p $OPENDKIM_KEYS_DIR
   opendkim-genkey -b 1024 -d $JMAIL_ORIGIN -D $OPENDKIM_KEYS_DIR -s sendonly
   chown -R 0:0 $OPENDKIM_KEYS_DIR/sendonly.private
+fi
+
+OPENDKIM_KEYS_GENERATE_FILE=/etc/opendkim/keys/$JMAIL_ORIGIN/.generate
+if [[ -f "${OPENDKIM_GENERATE_FILE}" ]]; then
+  echo "Re-generate DKIM keys for $JMAIL_ORIGIN"
+  opendkim-genkey -b 1024 -d $JMAIL_ORIGIN -D $OPENDKIM_KEYS_DIR -s sendonly
+  chown -R 0:0 $OPENDKIM_KEYS_DIR/sendonly.private
+  rm -f "${OPENDKIM_KEYS_GENERATE_FILE}"
 fi
 
 cat $OPENDKIM_KEYS_DIR/sendonly.txt

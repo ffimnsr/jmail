@@ -1,6 +1,6 @@
 # jmail
 
-jmail is a simple and lightweight mail server in a container. It's an SMTP-only mail server, so no incoming mails only outgoing. You can connect your servers and APIs to send emails for development and production.
+jmail is a simple and lightweight mail server in a container. It's an SMTP-only mail server (Outbound Only), so no incoming mails only outgoing. You can connect your servers and APIs to send emails for development and production.
 
 ## Features
 - Send SMTP mails for development and production use.
@@ -9,7 +9,7 @@ jmail is a simple and lightweight mail server in a container. It's an SMTP-only 
 
 ## Installation & Usage
 
-On a clean workstation do pull then run the container. 
+On a clean workstation do pull then run the container.
 ```
 podman pull ghcr.io/ffimnsr/jmail:latest
 mkdir -p ./{postfix-data,postfix-config,opendkim-keys}
@@ -23,7 +23,7 @@ podman run -d --name jmail -p 5587:587 \
   -v ./postfix-data:/var/spool/postfix:z \
   ghcr.io/ffimnsr/jmail:latest
 ```
-And lastly, check the logs if everything is working fine. 
+And lastly, check the logs if everything is working fine.
 The last thing to do before going to production is to setup correctly your `A`, `SPF`, `DKIM`, and `DMARC` records on your preferred public DNS.
 
 Here is a sample podman quadlet that you can use on your machine if you're utilizing podman architecture:
@@ -44,7 +44,7 @@ Volume=/var/container-data/postfix:/var/spool/postfix:z
 Environment=JMAIL_HOSTNAME=<mail-server-hostname>
 Environment=JMAIL_ORIGIN=<mail-server-hostname or mail-origin>
 Environment=JMAIL_ROOT_EMAIL=<root-email>
-HealthCmd=["sh", "-c", "nc -vz localhost 25"]
+HealthCmd=["CMD", "nc -vz localhost 25"]
 HealthInterval=30s
 HealthRetries=5
 HealthStartPeriod=20s
