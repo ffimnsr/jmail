@@ -7,6 +7,8 @@ addgroup postfix opendkim
 mkdir -p /var/spool/postfix/pid \
   && chown -R 0:0 /var/spool/postfix/pid
 
+mkdir -p /etc/sasl2
+
 TEMPLATES_DIR=/etc/templates
 dockerize \
   -template $TEMPLATES_DIR/postfix/aliases.tmpl:/etc/postfix/aliases \
@@ -18,6 +20,7 @@ dockerize \
   -template $TEMPLATES_DIR/opendkim/key.table.tmpl:/etc/opendkim/key.table \
   -template $TEMPLATES_DIR/opendkim/signing.table.tmpl:/etc/opendkim/signing.table \
   -template $TEMPLATES_DIR/opendkim/trusted.hosts.tmpl:/etc/opendkim/trusted.hosts \
+  -template $TEMPLATES_DIR/sasl2/smtpd.conf.tmpl:/etc/sasl2/smtpd.conf \
   -template $TEMPLATES_DIR/syslog/syslog.conf.tmpl:/etc/syslog.conf \
   -template $TEMPLATES_DIR/scripts/test-mail.sh.tmpl:/usr/local/bin/test-mail.sh
 
@@ -72,3 +75,6 @@ if [[ -f "${OPENDKIM_GENERATE_FILE}" ]]; then
 fi
 
 cat $OPENDKIM_KEYS_DIR/sendonly.txt
+
+echo "Setting up SASL password for jmail user"
+echo "${JMAIL_SMTP_PASSWORD}" | saslpasswd2 -p -c -u "${JMAIL_ORIGIN}" "${JMAIL_SMTP_USER}"

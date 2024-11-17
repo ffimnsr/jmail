@@ -12,14 +12,19 @@ mynetworks = 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 127.0.0.0/8
 # Incoming
 smtpd_banner = $myhostname ESMTP
 smtpd_delay_reject = yes
-smtpd_relay_restrictions = permit_mynetworks reject
-smtpd_recipient_restrictions = permit_mynetworks reject
+smtpd_relay_restrictions = permit_mynetworks, reject
+smtpd_recipient_restrictions = permit_mynetworks, reject
 smtpd_tls_cert_file = /etc/postfix/ssl/server.crt
 smtpd_tls_key_file = /etc/postfix/ssl/server.key
 smtpd_tls_security_level = encrypt
 smtpd_tls_session_cache_database = lmdb:${data_directory}/smtpd_scache
 smtpd_tls_auth_only = yes
 smtpd_tls_loglevel = 1
+
+# SASL Auth
+smtpd_sasl_auth_enable = yes
+smtpd_sasl_security_options = noanonymous, noplaintext
+smtpd_sasl_tls_security_options = noanonymous
 
 # Outgoing
 # smtp_generic_maps = lmdb:/etc/postfix/generic

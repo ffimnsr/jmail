@@ -18,6 +18,8 @@ podman run -d --name jmail -p 5587:587 \
   -e JMAIL_HOSTNAME=example.com \
   -e JMAIL_ORIGIN=example.com \
   -e JMAIL_ROOT_EMAIL=user@example.com \
+  -e JMAIL_SMTP_USER=jmail \
+  -e JMAIL_SMTP_PASSWORD=mysecretpassword \
   -v ./postfix-config:/etc/postfix:z \
   -v ./opendkim-keys:/etc/opendkim/keys:z \
   -v ./postfix-data:/var/spool/postfix:z \
@@ -44,6 +46,8 @@ Volume=/var/container-data/postfix:/var/spool/postfix:z
 Environment=JMAIL_HOSTNAME=<mail-server-hostname>
 Environment=JMAIL_ORIGIN=<mail-server-hostname or mail-origin>
 Environment=JMAIL_ROOT_EMAIL=<root-email>
+Environment=JMAIL_SMTP_USER=<username>
+Environment=JMAIL_SMTP_PASSWORD=<password>
 HealthCmd=["CMD", "nc -vz localhost 25"]
 HealthInterval=30s
 HealthRetries=5
