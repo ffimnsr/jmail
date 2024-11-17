@@ -38,12 +38,14 @@ echo "-----"
 
 POSTFIX_SSL_DIR=/etc/postfix/ssl
 if [[ ! -d "${POSTFIX_SSL_DIR}" ]]; then
-  cp -R /etc/templates/postfix/ssl $POSTFIX_SSL_DIR
+  mkdir -p $POSTFIX_SSL_DIR
+  cp -R /etc/templates/postfix/ssl/* $POSTFIX_SSL_DIR
 fi
 
 POSTFIX_SSL_GENERATE_FILE="${POSTFIX_SSL_DIR}/.generate"
+echo "Checking SSL regeneration trigger"
 if [[ -f "${POSTFIX_SSL_GENERATE_FILE}" ]]; then
-  cp -R /etc/templates/postfix/ssl $POSTFIX_SSL_DIR
+  cp -R /etc/templates/postfix/ssl/* $POSTFIX_SSL_DIR
   rm -f "${POSTFIX_SSL_GENERATE_FILE}"
 fi
 
@@ -61,6 +63,7 @@ if [[ ! -d "${OPENDKIM_KEYS_DIR}" ]]; then
 fi
 
 OPENDKIM_KEYS_GENERATE_FILE=/etc/opendkim/keys/$JMAIL_ORIGIN/.generate
+echo "Checking DKIM regeneration trigger for $JMAIL_ORIGIN"
 if [[ -f "${OPENDKIM_GENERATE_FILE}" ]]; then
   echo "Re-generate DKIM keys for $JMAIL_ORIGIN"
   opendkim-genkey -b 1024 -d $JMAIL_ORIGIN -D $OPENDKIM_KEYS_DIR -s sendonly
