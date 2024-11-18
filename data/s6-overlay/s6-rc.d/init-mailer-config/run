@@ -78,3 +78,7 @@ cat $OPENDKIM_KEYS_DIR/sendonly.txt
 
 echo "Setting up SASL password for jmail user"
 echo "${JMAIL_SMTP_PASSWORD}" | saslpasswd2 -p -c -u "${JMAIL_ORIGIN}" "${JMAIL_SMTP_USER}"
+
+# Fix permission errors
+chown -R postfix:postfix /etc/sasl2
+chmod 660 /etc/sasl2/sasldb2

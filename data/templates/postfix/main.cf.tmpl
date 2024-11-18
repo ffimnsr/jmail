@@ -16,15 +16,15 @@ smtpd_relay_restrictions = permit_mynetworks permit_sasl_authenticated reject
 smtpd_recipient_restrictions = permit_mynetworks permit_sasl_authenticated reject
 smtpd_tls_cert_file = /etc/postfix/ssl/server.crt
 smtpd_tls_key_file = /etc/postfix/ssl/server.key
-smtpd_tls_security_level = encrypt
+smtpd_tls_security_level = may
 smtpd_tls_session_cache_database = lmdb:${data_directory}/smtpd_scache
-smtpd_tls_auth_only = yes
+smtpd_tls_auth_only = no
 smtpd_tls_loglevel = 1
 
 # SASL Auth
 smtpd_sasl_auth_enable = yes
-smtpd_sasl_security_options = noanonymous, noplaintext
-smtpd_sasl_local_domain = {{ .Env.JMAIL_ORIGIN }}
+smtpd_sasl_security_options = noanonymous
+smtpd_sasl_local_domain = $myhostname
 
 # Allow broken clients to connect
 broken_sasl_auth_clients = yes
