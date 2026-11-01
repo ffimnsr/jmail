@@ -7,61 +7,119 @@ jmail is a simple and lightweight mail server in a container. It's an SMTP-only 
 - Outgoing emails signed with DKIM.
 - Lightweight, customizable and built with security in mind.
 
-## Installation & Usage
+## Installation
 
-On a clean workstation do pull then run the container.
-```
+Pull the image:
+
+```sh
 podman pull ghcr.io/ffimnsr/jmail:latest
-mkdir -p ./{postfix-data,postfix-config,opendkim-keys}
-podman run -d --name jmail -p 5587:587 \
-  -h example.com \
-  -e JMAIL_HOSTNAME=example.com \
+```
+
+Images are published for `linux/amd64` and `linux/arm64`, tagged `latest`, `X.Y.Z`, `X.Y` and `X`, and signed with
+cosign.
+
+### Quick start
+
+```sh
+mkdir -p ./jmail/{postfix-ssl,opendkim-keys,spool}
+podman run -d --name jmail \
+  --restart unless-stopped \
+  -h mail.example.com \
+  -p 587:587 \
+  -e JMAIL_HOSTNAME=mail.example.com \
   -e JMAIL_ORIGIN=example.com \
-  -e JMAIL_ROOT_EMAIL=user@example.com \
+  -e JMAIL_ROOT_EMAIL=postmaster@example.com \
   -e JMAIL_SMTP_USER=jmail \
-  -e JMAIL_SMTP_PASSWORD=mysecretpassword \
-  -v ./postfix-config:/etc/postfix:z \
-  -v ./opendkim-keys:/etc/opendkim/keys:z \
-  -v ./postfix-data:/var/spool/postfix:z \
+  -e JMAIL_SMTP_PASSWORD='change-me' \
+  -v ./jmail/postfix-ssl:/etc/postfix/ssl:z \
+  -v ./jmail/opendkim-keys:/etc/opendkim/keys:z \
+  -v ./jmail/spool:/var/spool/postfix:z \
   ghcr.io/ffimnsr/jmail:latest
 ```
-And lastly, check the logs if everything is working fine.
-The last thing to do before going to production is to setup correctly your `A`, `SPF`, `DKIM`, and `DMARC` records on your preferred public DNS.
 
-Here is a sample podman quadlet that you can use on your machine if you're utilizing podman architecture:
+- `-h` must match `JMAIL_HOSTNAME`. Postfix announces it in the SMTP banner and receivers check its PTR record.
+- `JMAIL_ORIGIN` is the domain that gets DKIM-signed, and the realm the SASL user is created in. Only `From:`
+  addresses at this domain are signed.
+- If port `587` is taken, or you run rootless, publish a higher port instead, for example `-p 10587:587`.
+- On Docker, use `docker run` and drop the `:z` suffixes. Those relabel the mounts for SELinux.
+
+Then watch the logs:
+
+```sh
+podman logs -f jmail
 ```
-[Unit]
-Description=Jmail Service
-Wants=network-online.target
-After=network-online.target
 
-[Container]
-ContainerName=jmail
-Image=ghcr.io/ffimnsr/jmail:latest
-Pull=always
-HostName=<mail-server-hostname>
-Volume=/etc/container-configs/jmail/postfix-ssl:/etc/postfix/ssl:z
-Volume=/etc/container-configs/jmail/opendkim-keys:/etc/opendkim/keys:z
-Volume=/var/container-data/postfix:/var/spool/postfix:z
-Environment=JMAIL_HOSTNAME=<mail-server-hostname>
-Environment=JMAIL_ORIGIN=<mail-server-hostname or mail-origin>
-Environment=JMAIL_ROOT_EMAIL=<root-email>
-Environment=JMAIL_SMTP_USER=<username>
-Environment=JMAIL_SMTP_PASSWORD=<password>
-# Docker uses the image's HEALTHCHECK; podman needs it declared here.
-HealthCmd=nc -z 127.0.0.1 587
-HealthInterval=30s
-HealthRetries=3
-HealthStartPeriod=30s
-HealthTimeout=5s
-PublishPort=10587:587
+On first boot the container renders its configuration, generates a 2048-bit DKIM key and a self-signed ECDSA
+certificate, creates the SASL account, and prints the DKIM TXT record you have to publish.
 
-[Service]
-Restart=always
+### Send through it
 
-[Install]
-WantedBy=multi-user.target default.target
+| Setting | Value |
+| --- | --- |
+| Host | Your server, or `127.0.0.1` from the same machine |
+| Port | `587` |
+| Encryption | STARTTLS, required before `AUTH` (`smtpd_tls_auth_only = yes`) |
+| Username | `JMAIL_SMTP_USER` |
+| Password | `JMAIL_SMTP_PASSWORD` |
+
+From inside the container, `podman exec jmail test-mail.sh` sends a message to `JMAIL_ROOT_EMAIL`. Relaying is only
+allowed for authenticated clients and for the networks in `JMAIL_MYNETWORKS`, which defaults to `127.0.0.0/8`.
+
+### Podman quadlet
+
+For a systemd-managed deployment, generate the unit instead of writing one by hand:
+
+```sh
+./scripts/quadlet.sh --scope system --install     # root, /etc/containers/systemd
+./scripts/quadlet.sh --install                    # user scope, systemctl --user
 ```
+
+It writes the `.container` unit plus a `0600` environment file, generates an SMTP password when you do not supply
+`JMAIL_SMTP_PASSWORD`, and starts the service. Drop `--install` to only generate the files. The resulting unit, and
+the manual alternative, are documented in
+[docs/src/guide/installation.md](docs/src/guide/installation.md#podman-quadlet).
+
+Full documentation: [`docs/`](docs) (published from the repository).
+
+## Mail Checklist
+
+These are the things to get right before you send production mail. Every one of them is checked from the receiving
+side, so passing a local test send is not enough.
+
+- [ ] `A` record for `JMAIL_HOSTNAME` pointing at the server's public IP.
+- [ ] `PTR` (rDNS) record on that IP resolving back to the same name. Receivers compare it with the banner hostname,
+      and a mismatch costs you deliverability even when everything else is correct. This is set at your hosting
+      provider, not in your DNS zone.
+- [ ] **No `MX` record is needed.** jmail is outbound-only: it does not accept inbound mail, so an MX record would
+      only advertise a service this container does not run. If the domain already has a null MX (`v=MX:0 .`), leave
+      it alone.
+- [ ] `DKIM` — publish the record printed at startup, at `sendonly._domainkey.<JMAIL_ORIGIN>`. It is also written to
+      `/etc/opendkim/keys/<JMAIL_ORIGIN>/sendonly.txt`, which you can read from the running container with
+      `podman exec jmail sh -c 'cat /etc/opendkim/keys/$JMAIL_ORIGIN/sendonly.txt'`. A 2048-bit key produces
+      roughly 400 characters, which has to stay split into quoted 255-character strings on one line.
+- [ ] `SPF` — on the domain you send `From:`, which for this image means `JMAIL_ORIGIN`:
+      ```
+      v=spf1 a:<mail-server-hostname> ip4:<server-ip> -all
+      ```
+      `-all` is a hard fail; that is what you want once the record is correct. A `From:` address at any other
+      domain goes out unsigned and unaligned, so either keep senders inside `JMAIL_ORIGIN` or extend the OpenDKIM
+      signing table (see [Customization](docs/src/advanced/customization.md)).
+- [ ] Outbound port `25` is not blocked. Many cloud and VPS providers block it by default; mail then queues with a
+      `connect to ...:25` error instead of being delivered.
+- [ ] `DMARC` — start permissive so you can read the reports, then tighten:
+      ```
+      v=DMARC1; p=none; rua=mailto:dmarc@<your-domain>
+      ```
+      After a week or two of clean reports, move to `p=reject`, and add `sp=reject` if subdomains should be rejected
+      too:
+      ```
+      v=DMARC1; p=reject; sp=reject; rua=mailto:dmarc@<your-domain>
+      ```
+- [ ] TLS — the container serves a self-signed certificate until you put a real `server.crt` and `server.key` into
+      the `/etc/postfix/ssl` volume. Swap them in if your clients or upstream relays verify certificates.
+- [ ] Check the IP against the major blocklists, for example https://multirbl.valli.org, and request delisting
+      before the first send.
+- [ ] Send a real message to https://www.mail-tester.com and aim for a clean report before rolling out.
 
 ## Customization
 
@@ -81,26 +139,6 @@ podman run -d --name jmail \
 
 Everything else, including replacing a template or adding a service to a derived image, is covered in
 [docs/src/advanced/customization.md](docs/src/advanced/customization.md).
-
-## Mail Checklist
-
-This are the things you need to do before going to production:
-
-- [ ] Setup `A` record pointing to your server IP.
-  - [ ] Setup `PTR` records on your reverse zones if you are not using your rDNS hostname as mail server hostname.
-- [ ] Setup `MX` records pointing to the `A` record.
-- [ ] Setup `DKIM` to the one printed in the jmail logs.
-- [ ] Setup `SPF` to your domain record and or to your ip address. The setup below is full reject/fail (bounce) and not soft fail (accept and record).
-  ```
-  v=spf1 a:<mail-server-hostname> ip4:<server-ip> -all
-  ```
-- [ ] Setup `DMARC` to strict. This specifies the policy to reject on main domain then reject also on subdomain.
-  ```
-  v=DMARC1;  p=reject; sp=reject; rua=mailto:catchall@<mail-server-hostname>
-  ```
-- [ ] Check if your IP is in email blacklists. De-list it.
-- [ ] Test your emails on https://mail-tester.com.
-
 
 ## Tasks
 

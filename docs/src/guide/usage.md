@@ -37,23 +37,28 @@ podman exec -it jmail test-mail.sh
 podman logs --tail 50 jmail
 ```
 
-The scripts in the repository root, `test-auth.py` and `test-auth-send-mail.py`, connect over STARTTLS,
-authenticate and (in the second case) send a message. Point `smtp_server` at your server before running them.
+The scripts in the repository root, `test-auth.py` and `test-auth-send-mail.py`, connect over STARTTLS and
+authenticate; the second one also sends a message. They read `JMAIL_TEST_SERVER`, `JMAIL_TEST_PORT`,
+`JMAIL_TEST_USER`, `JMAIL_TEST_PASSWORD`, and for the second script `JMAIL_TEST_SENDER` and `JMAIL_TEST_RECEIVER`,
+falling back to the placeholder values in the file. `mk test-auth` and `mk test-send` run them against the local dev
+container with those variables already set.
 
 ## TLS
 
 On first boot jmail generates a self-signed ECDSA (P-384) certificate valid for ten years, with `JMAIL_ORIGIN`
-as its common name and subject alternative name. The certificate and key live in `/etc/postfix/ssl/` inside the
-`/etc/postfix` volume.
+as its common name and subject alternative name. The certificate and key live in `/etc/postfix/ssl/`, which is the
+volume to persist (mounting all of `/etc/postfix` also works, since that is a volume in the image as well).
 
 To use a real certificate, put your own `server.crt` and `server.key` in that directory and restart the container.
-jmail only generates a certificate when the files are absent.
+jmail installs its generated certificate only when `server.crt` or `server.key` is missing, so your own files are
+left alone. (The log still prints the self-signed certificate it generates at startup, because it does not know yet
+whether one of the two files is going to be supplied later.)
 
 To regenerate the self-signed certificate (for example after changing `JMAIL_ORIGIN`), create the trigger file and
 restart:
 
 ```sh
-touch /etc/postfix/ssl/.generate   # inside the /etc/postfix volume
+touch /etc/postfix/ssl/.generate   # inside the /etc/postfix/ssl volume
 podman restart jmail
 ```
 
@@ -63,7 +68,10 @@ A 2048-bit RSA key is generated for `JMAIL_ORIGIN` on first boot and stored in
 `/etc/opendkim/keys/$JMAIL_ORIGIN/sendonly.private`. The matching DNS record is printed to the log as
 `sendonly._domainkey IN TXT (...)`, and is also written to `sendonly.txt` next to the key.
 
-Every message sent through jmail is signed as `sendonly._domainkey.$JMAIL_ORIGIN`.
+Every message sent through jmail is signed as `sendonly._domainkey.$JMAIL_ORIGIN`. The signing table maps
+`*@$JMAIL_ORIGIN` only, with `SubDomains no`, so a message whose `From:` address is at another domain (or at a
+subdomain) is passed through **unsigned** rather than rejected. Keep senders inside `JMAIL_ORIGIN`, or extend the
+signing and key tables — see [Customization](../advanced/customization.md).
 
 To rotate the key, create the trigger file and restart:
 
@@ -87,9 +95,10 @@ sendonly._domainkey IN TXT ( "v=DKIM1; k=rsa; "
 
 The `sendonly.txt` file next to the key and the log output are already printed in this split form, so copy them
 verbatim. Most DNS providers and APIs accept the quoted chunks and rejoin them; a few only accept a single
-unquoted string and reject records over 255 characters. If yours does, either upgrade to a provider that supports
-long TXT records or switch the key to 1024 bits by editing the two `opendkim-genkey` calls in
-`/etc/s6-overlay/s6-rc.d/init-mailer-config/run` and rebuilding the image.
+unquoted string and reject records over 255 characters. If yours does, the clean fix is to move the record to a
+provider that can store long TXT values. Falling back to a 1024-bit key means changing the two `opendkim-genkey`
+calls in `/etc/s6-overlay/s6-rc.d/init-mailer-config/run` and rebuilding the image, and 1024-bit RSA keys are
+increasingly treated as weak by receivers.
 
 ## Where the configuration lives
 
@@ -106,22 +115,28 @@ directories instead of editing rendered files: see [Customization](../advanced/c
 
 ## DNS checklist
 
-Before sending production mail, work through this list:
+Before sending production mail, work through this list. Each item is checked from the receiving side, so a working
+local test send does not prove any of them.
 
-- [ ] `A` record pointing to your server IP.
-  - [ ] `PTR` record on the reverse zone, if you are not using your rDNS hostname as the mail server hostname.
-- [ ] `MX` record pointing to the `A` record.
-- [ ] `DKIM` record from the jmail log.
-- [ ] `SPF` record on your domain. The example below is a hard fail, not a soft fail:
+- [ ] `A` record for `JMAIL_HOSTNAME` pointing at the server's public IP.
+- [ ] `PTR` (rDNS) record on that IP resolving back to the same name. It is set at your hosting provider, and
+      receivers compare it with the banner hostname.
+- [ ] **No `MX` record is required.** jmail is outbound-only and does not accept inbound mail, so an MX record would
+      advertise a service the container does not run. A pre-existing null MX (`v=MX:0 .`) is fine.
+- [ ] `DKIM` record at `sendonly._domainkey.<JMAIL_ORIGIN>`, from the log or `sendonly.txt`.
+- [ ] `SPF` record on the domain you send `From:`, which here means `JMAIL_ORIGIN`. The example is a hard fail, not
+      a soft fail:
   ```
   v=spf1 a:<mail-server-hostname> ip4:<server-ip> -all
   ```
-- [ ] `DMARC` record. This example rejects on the main domain and on subdomains:
+- [ ] Outbound port `25` is open. Many providers block it, and mail then queues instead of being delivered.
+- [ ] `DMARC` record. Start with `p=none` so you can read the reports, then tighten to reject on the domain and on
+  subdomains:
   ```
   v=DMARC1; p=reject; sp=reject; rua=mailto:catchall@<mail-server-hostname>
   ```
-- [ ] Check whether your IP is on an email blacklist, and delist it if it is.
-- [ ] Send a test message to https://mail-tester.com and check the report.
+- [ ] Check whether your IP is on an email blocklist (https://multirbl.valli.org), and delist it if it is.
+- [ ] Send a test message to https://www.mail-tester.com and check the report.
 
 ## Troubleshooting
 

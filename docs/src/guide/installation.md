@@ -25,32 +25,41 @@ Images are published to `ghcr.io/ffimnsr/jmail` for `linux/amd64` and `linux/arm
 ## Run the container
 
 ```sh
-mkdir -p ./{postfix-data,postfix-config,opendkim-keys}
-podman run -d --name jmail -p 5587:587 \
-  -h example.com \
-  -e JMAIL_HOSTNAME=example.com \
+mkdir -p ./jmail/{postfix-ssl,opendkim-keys,spool}
+podman run -d --name jmail \
+  --restart unless-stopped \
+  -h mail.example.com \
+  -p 587:587 \
+  -e JMAIL_HOSTNAME=mail.example.com \
   -e JMAIL_ORIGIN=example.com \
-  -e JMAIL_ROOT_EMAIL=user@example.com \
+  -e JMAIL_ROOT_EMAIL=postmaster@example.com \
   -e JMAIL_SMTP_USER=jmail \
-  -e JMAIL_SMTP_PASSWORD=mysecretpassword \
-  -v ./postfix-config:/etc/postfix:z \
-  -v ./opendkim-keys:/etc/opendkim/keys:z \
-  -v ./postfix-data:/var/spool/postfix:z \
+  -e JMAIL_SMTP_PASSWORD='change-me' \
+  -v ./jmail/postfix-ssl:/etc/postfix/ssl:z \
+  -v ./jmail/opendkim-keys:/etc/opendkim/keys:z \
+  -v ./jmail/spool:/var/spool/postfix:z \
   ghcr.io/ffimnsr/jmail:latest
 ```
 
 If you use Docker, replace `podman` with `docker` and drop the `:z` suffixes on the volume mounts.
 
-Set `-h` to the same value as `JMAIL_HOSTNAME`: Postfix uses the hostname in its banner, and the generated TLS
-certificate uses `JMAIL_ORIGIN` as its common name and subject alternative name.
+Set `-h` to the same value as `JMAIL_HOSTNAME`: Postfix uses the hostname in its banner and receivers check its PTR
+record, while the generated TLS certificate uses `JMAIL_ORIGIN` as its common name and subject alternative name.
+
+If port `587` is already in use, or you run rootless, publish a higher host port instead, for example
+`-p 10587:587`, and point your clients at that port.
 
 ### Volumes
 
 | Path | Purpose |
 | --- | --- |
-| `/etc/postfix` | Rendered Postfix configuration, including the TLS certificate under `ssl/`. |
+| `/etc/postfix/ssl` | The TLS certificate and key. Persist this, otherwise every new container gets a new self-signed certificate. |
 | `/etc/opendkim/keys` | DKIM private keys, one directory per domain. |
 | `/var/spool/postfix` | Postfix queue. Persisting it keeps mail that is still being retried across restarts. |
+| `/etc/jmail/postfix.d`, `/etc/jmail/init.d` | Optional overrides and hooks; see [Customization](../advanced/customization.md). |
+
+`/etc/postfix` as a whole is also a volume in the image, so mounting it instead of `/etc/postfix/ssl` works too.
+Its rendered files are rewritten from the templates on every start, which is why only `ssl/` is worth persisting.
 
 ### Ports
 
@@ -59,8 +68,8 @@ certificate uses `JMAIL_ORIGIN` as its common name and subject alternative name.
 | `25` | SMTP with postscreen in front of it. |
 | `587` | Submission with STARTTLS and SASL authentication. This is the port the image declares with `EXPOSE`. |
 
-Most deployments only publish `587`, for example `-p 5587:587`. Publishing port `25` is only useful if you want
-another mail server to relay through jmail.
+Most deployments only publish `587`, for example `-p 10587:587` if the host already uses `587`. Publishing port
+`25` is only useful if another mail server should relay through jmail.
 
 ### Check the logs
 
@@ -156,3 +165,19 @@ podman rm -f jmail
 ```
 
 Keep the `/etc/opendkim/keys` volume: your existing DKIM keys stay valid and your DNS records do not change.
+
+## Working from the repository
+
+The checkout ships [`mk`](https://github.com/ffimnsr/mk-rs) tasks for the local loop, so you do not have to paste
+the `podman run` line above while developing:
+
+```sh
+mk build          # build the image locally, labelled with the newest tag
+mk up             # start a dev container on 10587, state under .jmail/
+mk logs           # follow it
+mk test-auth      # STARTTLS + AUTH check against 127.0.0.1:10587
+mk test-mail      # send the built-in test message
+mk clean          # remove the container and the state directory
+```
+
+`mk list` shows the rest, including `quadlet-generate`, `docs` and the release tasks.
