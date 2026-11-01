@@ -1,0 +1,228 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// config is read once at startup. Everything the service does is bounded by it,
+// so a missing or nonsensical value is a startup error rather than a surprise
+// under load.
+type config struct {
+	listen string
+	token  string
+
+	// origin is JMAIL_ORIGIN: the domain OpenDKIM signs. hostname is
+	// JMAIL_HOSTNAME, used for the EHLO name and the Message-ID domain.
+	origin   string
+	hostname string
+
+	smtpAddr    string
+	smtpTimeout time.Duration
+	concurrency int
+
+	allowedFrom  []string
+	allowAnyFrom bool
+
+	maxBytes       int64
+	maxRecipients  int
+	maxAttachments int
+
+	rate  float64
+	burst int
+
+	idempotencyTTL time.Duration
+}
+
+func loadConfig() (*config, error) {
+	cfg := &config{
+		listen:   envString("JMAIL_HTTP_LISTEN", "0.0.0.0:8080"),
+		token:    strings.TrimSpace(os.Getenv("JMAIL_HTTP_TOKEN")),
+		origin:   strings.ToLower(strings.TrimSpace(envString("JMAIL_ORIGIN", "example.com"))),
+		hostname: envString("JMAIL_HOSTNAME", "localhost"),
+		smtpAddr: envString("JMAIL_HTTP_SMTP_ADDR", "127.0.0.1:25"),
+	}
+
+	// Fail closed: an unauthenticated relay is an open relay.
+	if cfg.token == "" {
+		return nil, fmt.Errorf("JMAIL_HTTP_TOKEN must be set; the API refuses to start without a bearer token")
+	}
+	if cfg.origin == "" {
+		return nil, fmt.Errorf("JMAIL_ORIGIN must be set; it defines the default allowed sending domain")
+	}
+
+	var err error
+	if cfg.smtpTimeout, err = envDuration("JMAIL_HTTP_TIMEOUT", 30*time.Second); err != nil {
+		return nil, err
+	}
+	if cfg.concurrency, err = envInt("JMAIL_HTTP_CONCURRENCY", 16); err != nil {
+		return nil, err
+	}
+	if cfg.maxRecipients, err = envInt("JMAIL_HTTP_MAX_RECIPIENTS", 50); err != nil {
+		return nil, err
+	}
+	if cfg.maxAttachments, err = envInt("JMAIL_HTTP_MAX_ATTACHMENTS", 10); err != nil {
+		return nil, err
+	}
+	if cfg.burst, err = envInt("JMAIL_HTTP_RATE_BURST", 20); err != nil {
+		return nil, err
+	}
+	if cfg.maxBytes, err = envBytes("JMAIL_HTTP_MAX_BYTES", 5<<20); err != nil {
+		return nil, err
+	}
+	if cfg.rate, err = envFloat("JMAIL_HTTP_RATE", 10); err != nil {
+		return nil, err
+	}
+	if cfg.idempotencyTTL, err = envDuration("JMAIL_HTTP_IDEMPOTENCY_TTL", time.Hour); err != nil {
+		return nil, err
+	}
+
+	cfg.allowedFrom, cfg.allowAnyFrom = parseAllowedFrom(envString("JMAIL_HTTP_ALLOWED_FROM", ""), cfg.origin)
+	return cfg, nil
+}
+
+// allowedDomains is the list used in error messages, so a rejected sender tells
+// the caller what would have worked.
+func (c *config) allowedDomains() []string {
+	if c.allowAnyFrom {
+		return []string{"*"}
+	}
+	return c.allowedFrom
+}
+
+// fromAllowed enforces a match against JMAIL_ORIGIN rather than a subdomain
+// wildcard on purpose: the OpenDKIM signing table covers exactly
+// *@JMAIL_ORIGIN with SubDomains no, so anything else leaves unsigned.
+func (c *config) fromAllowed(addr string) bool {
+	if c.allowAnyFrom {
+		return true
+	}
+	domain := addressDomain(addr)
+	for _, allowed := range c.allowedFrom {
+		if domain == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+func addressDomain(addr string) string {
+	at := strings.LastIndex(addr, "@")
+	if at < 0 {
+		return ""
+	}
+	return strings.TrimSuffix(strings.ToLower(addr[at+1:]), ".")
+}
+
+func parseAllowedFrom(raw, origin string) (domains []string, allowAny bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return []string{origin}, false
+	}
+
+	seen := make(map[string]bool)
+	for _, field := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n'
+	}) {
+		field = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(field), "@"))
+		if field == "" {
+			continue
+		}
+		if field == "*" {
+			return nil, true
+		}
+		if seen[field] {
+			continue
+		}
+		seen[field] = true
+		domains = append(domains, field)
+	}
+	if len(domains) == 0 {
+		return []string{origin}, false
+	}
+	return domains, false
+}
+
+func envString(key, def string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return def
+}
+
+func envInt(key string, def int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("%s must be greater than zero, got %d", key, n)
+	}
+	return n, nil
+}
+
+func envFloat(key string, def float64) (float64, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def, nil
+	}
+	f, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+	if f <= 0 {
+		return 0, fmt.Errorf("%s must be greater than zero, got %v", key, f)
+	}
+	return f, nil
+}
+
+func envDuration(key string, def time.Duration) (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("%s must be greater than zero, got %s", key, d)
+	}
+	return d, nil
+}
+
+// envBytes accepts a plain byte count or a K/M/G suffix, optionally followed by
+// B, so both 5242880 and 5MB work.
+func envBytes(key string, def int64) (int64, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def, nil
+	}
+
+	value := strings.ToUpper(strings.TrimSuffix(raw, "B"))
+	multiplier := int64(1)
+	switch {
+	case strings.HasSuffix(value, "K"):
+		multiplier, value = 1<<10, strings.TrimSuffix(value, "K")
+	case strings.HasSuffix(value, "M"):
+		multiplier, value = 1<<20, strings.TrimSuffix(value, "M")
+	case strings.HasSuffix(value, "G"):
+		multiplier, value = 1<<30, strings.TrimSuffix(value, "G")
+	}
+
+	n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("%s must be greater than zero, got %s", key, raw)
+	}
+	return n * multiplier, nil
+}

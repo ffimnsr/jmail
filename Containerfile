@@ -1,3 +1,21 @@
+# The HTTP submission API is optional at run time (svc-jmail-http only starts the
+# service when JMAIL_HTTP_TOKEN is set), but it is built here so the runtime image
+# carries no Go toolchain. Cross-compiling from the builder architecture keeps the
+# arm64 build off emulation.
+FROM golang:1.25-alpine AS http-build
+
+WORKDIR /src
+COPY go.mod ./
+COPY cmd/jmail-http ./cmd/jmail-http
+
+ARG TARGETARCH
+ARG JMAIL_VERSION=dev
+RUN set -eux; \
+  arch="${TARGETARCH:-$(go env GOARCH)}"; \
+  CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
+    go build -trimpath -ldflags="-s -w -X main.version=${JMAIL_VERSION}" \
+      -o /out/jmail-http ./cmd/jmail-http
+
 FROM alpine:3.24
 
 ARG DOCKERIZE_VERSION=v0.16.0
@@ -72,6 +90,7 @@ RUN set -eux; \
 
 COPY /data/s6-overlay /etc/s6-overlay
 COPY /data/templates /etc/templates
+COPY --from=http-build /out/jmail-http /usr/local/bin/jmail-http
 
 # Extension points, applied by init-mailer-config on every start. They exist in
 # the image so a derived image or a bind mount can drop files into them without
@@ -89,4 +108,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD postfix status >/dev/null 2>&1 && nc -z 127.0.0.1 587
 
 STOPSIGNAL SIGINT
-EXPOSE 25 587
+EXPOSE 25 587 8080

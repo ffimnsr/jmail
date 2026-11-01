@@ -1,0 +1,16 @@
+#!/usr/bin/with-contenv bash
+
+# The HTTP API is opt-in: JMAIL_HTTP_TOKEN is the switch. s6 restarts a longrun
+# whenever it exits and the bundle is static, so an unset token parks here
+# instead of turning into a restart loop.
+if [[ -z "${JMAIL_HTTP_TOKEN}" ]]; then
+  echo "jmail-http: disabled, set JMAIL_HTTP_TOKEN to enable the HTTP API"
+  exec tail -f /dev/null
+fi
+
+# svc-postfix only guarantees that Postfix was started; master.cf binds its
+# listeners a moment later, and a request arriving before that fails with a 502.
+# dockerize is already in the image for exactly this kind of wait.
+dockerize -wait tcp://127.0.0.1:25 -timeout 60s
+
+exec /usr/local/bin/jmail-http

@@ -4,6 +4,7 @@ environment:
   JMAIL_IMAGE: ghcr.io/ffimnsr/jmail:latest
   JMAIL_TEST_CONTAINER: jmail-dev
   JMAIL_TEST_PORT: "10587"
+  JMAIL_TEST_HTTP_PORT: "10808"
   JMAIL_STATE_DIR: .jmail
 
 tasks:
@@ -28,6 +29,7 @@ tasks:
           -h "$JMAIL_HOSTNAME" \
           --env-file .env.test \
           -p "$JMAIL_TEST_PORT:587" \
+          -p "$JMAIL_TEST_HTTP_PORT:8080" \
           -v "$PWD/$JMAIL_STATE_DIR/postfix-ssl:/etc/postfix/ssl:Z" \
           -v "$PWD/$JMAIL_STATE_DIR/opendkim-keys:/etc/opendkim/keys:Z" \
           -v "$PWD/$JMAIL_STATE_DIR/spool:/var/spool/postfix:Z" \
@@ -111,6 +113,29 @@ tasks:
         JMAIL_TEST_SENDER="noreply@$JMAIL_ORIGIN" \
         JMAIL_TEST_RECEIVER="$JMAIL_ROOT_EMAIL" \
           python3 test-auth-send-mail.py
+
+  test-go:
+    description: Vet and unit-test the Go code
+    when:
+      command_exists:
+        - go
+    commands:
+      - go vet ./...
+      - go test ./cmd/jmail-http/
+
+  test-http:
+    description: Smoke-test the HTTP API of the dev container
+    commands:
+      - |
+        set -a
+        . ./.env.test
+        set +a
+        JMAIL_TEST_HTTP_SERVER=127.0.0.1 \
+        JMAIL_TEST_HTTP_PORT="$JMAIL_TEST_HTTP_PORT" \
+        JMAIL_TEST_HTTP_TOKEN="$JMAIL_HTTP_TOKEN" \
+        JMAIL_TEST_SENDER="noreply@$JMAIL_ORIGIN" \
+        JMAIL_TEST_RECEIVER="$JMAIL_ROOT_EMAIL" \
+          ./test-http.sh
 
   dkim:
     description: Print the DKIM TXT record that has to be published in DNS

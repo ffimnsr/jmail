@@ -116,6 +116,10 @@ Environment=JMAIL_ORIGIN=<mail-server-hostname or mail-origin>
 Environment=JMAIL_ROOT_EMAIL=<root-email>
 Environment=JMAIL_SMTP_USER=<username>
 Environment=JMAIL_SMTP_PASSWORD=<password>
+# Optional HTTP API. It stays off unless a token is set, and the port speaks
+# plain HTTP, so bind it to loopback or put TLS in front of it.
+# Environment=JMAIL_HTTP_TOKEN=<token>
+# PublishPort=127.0.0.1:10808:8080
 # Docker uses the image's HEALTHCHECK; podman needs it declared here.
 HealthCmd=nc -z 127.0.0.1 587
 HealthInterval=30s
@@ -153,6 +157,12 @@ It reads `JMAIL_IMAGE`, `JMAIL_HOSTNAME`, `JMAIL_ORIGIN`, `JMAIL_ROOT_EMAIL`, `J
 password when none is given, and writes the environment file with `0600` permissions. `--help` lists the defaults
 for each variable.
 
+Pass `--http` to publish the HTTP API as well, or set `JMAIL_HTTP_TOKEN` and it is enabled implicitly. The token is
+generated when you do not supply one, written to the same environment file, and printed once. The API is published on
+`127.0.0.1:10808` by default, because the container serves it over plain HTTP: use `JMAIL_HTTP_PUBLISH_PORT` and
+`JMAIL_HTTP_PUBLISH_BIND=0.0.0.0` only when a TLS terminator on another host fronts it. See
+[HTTP API](http-api.md).
+
 ## Upgrading
 
 The container regenerates every rendered file from its templates on each start, so pulling a newer image and
@@ -176,6 +186,8 @@ mk build          # build the image locally, labelled with the newest tag
 mk up             # start a dev container on 10587, state under .jmail/
 mk logs           # follow it
 mk test-auth      # STARTTLS + AUTH check against 127.0.0.1:10587
+mk test-go        # go vet and unit tests for the HTTP submission service
+mk test-http      # HTTP API smoke test against 127.0.0.1:10808
 mk test-mail      # send the built-in test message
 mk clean          # remove the container and the state directory
 ```

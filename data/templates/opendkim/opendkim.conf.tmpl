@@ -13,6 +13,15 @@ SubDomains              no
 KeyTable                refile:/etc/opendkim/key.table
 SigningTable            refile:/etc/opendkim/signing.table
 
+# Extend the built-in header set rather than replacing it. A value with no
+# "type:" prefix is read as a comma-separated list; a leading "*" turns it into
+# a delta against the RFC 6376 defaults, where "+name" adds and "-name" removes.
+# The built-in list predates RFC 8058, so the one-click unsubscribe header and
+# Feedback-ID were left out, and it omits Message-ID and the MIME headers that
+# RFC 6376 itself recommends. Only headers present in the message are hashed;
+# oversigning absent ones is OversignHeaders, which is deliberately not set.
+SignHeaders             *,+message-id,+mime-version,+content-type,+content-transfer-encoding,+list-unsubscribe-post,+feedback-id
+
 Socket                  inet:8892@localhost
 ReportAddress           postmaster@{{ .Env.JMAIL_ORIGIN }}
 SendReports             yes

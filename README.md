@@ -5,6 +5,7 @@ jmail is a simple and lightweight mail server in a container. It's an SMTP-only 
 ## Features
 - Send SMTP mails for development and production use.
 - Outgoing emails signed with DKIM.
+- Optional HTTP API for clients that cannot open an outbound SMTP connection.
 - Lightweight, customizable and built with security in mind.
 
 ## Installation
@@ -65,6 +66,28 @@ certificate, creates the SASL account, and prints the DKIM TXT record you have t
 From inside the container, `podman exec jmail test-mail.sh` sends a message to `JMAIL_ROOT_EMAIL`. Relaying is only
 allowed for authenticated clients and for the networks in `JMAIL_MYNETWORKS`, which defaults to `127.0.0.0/8`.
 
+### HTTP API (optional)
+
+If a client cannot reach port `587`, for example a serverless function or a provider that blocks SMTP egress, the
+container can also accept messages over HTTP. It is off until you set a token:
+
+```sh
+podman run -d --name jmail \
+  -p 8080:8080 \
+  -e JMAIL_HTTP_TOKEN="$(openssl rand -hex 32)" \
+  ...
+
+curl -X POST http://127.0.0.1:8080/v1/send \
+  -H "Authorization: Bearer $JMAIL_HTTP_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"from":"noreply@example.com","to":["someone@example.net"],"subject":"Hi","text":"Hello"}'
+```
+
+It returns `202` with the Postfix queue id once the message is queued. The request is handed to Postfix over the
+loopback interface, so DKIM signing, retries and the queue behave exactly as they do for SMTP. Terminate TLS in front
+of the port with Caddy or Traefik; the container itself serves plain HTTP there. See
+[docs/src/guide/http-api.md](docs/src/guide/http-api.md).
+
 ### Podman quadlet
 
 For a systemd-managed deployment, generate the unit instead of writing one by hand:
@@ -75,8 +98,9 @@ For a systemd-managed deployment, generate the unit instead of writing one by ha
 ```
 
 It writes the `.container` unit plus a `0600` environment file, generates an SMTP password when you do not supply
-`JMAIL_SMTP_PASSWORD`, and starts the service. Drop `--install` to only generate the files. The resulting unit, and
-the manual alternative, are documented in
+`JMAIL_SMTP_PASSWORD`, and starts the service. Add `--http` to publish the HTTP API and generate its bearer token;
+the port is published only on `127.0.0.1` unless you set `JMAIL_HTTP_PUBLISH_BIND`. Drop `--install` to only
+generate the files. The resulting unit, and the manual alternative, are documented in
 [docs/src/guide/installation.md](docs/src/guide/installation.md#podman-quadlet).
 
 Full documentation: [`docs/`](docs) (published from the repository).
@@ -153,6 +177,8 @@ them.
 | `mk clean` | Remove the dev container and the local `.jmail/` state directory |
 | `mk test-mail` | Send the built-in test message to `JMAIL_ROOT_EMAIL` |
 | `mk test-auth` / `mk test-send` | Check STARTTLS + AUTH, then deliver a message through the container |
+| `mk test-go` | `go vet` and unit tests for the HTTP submission service |
+| `mk test-http` | `curl` smoke test of the HTTP API against the dev container |
 | `mk dkim` | Print the DKIM TXT record to publish |
 | `mk quadlet-generate` | Write `quadlet/jmail.container` and `quadlet/jmail.env` |
 | `mk quadlet-install` | Install and start the user-scope quadlet |

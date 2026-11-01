@@ -28,6 +28,8 @@ build_args=(
   --label org.opencontainers.image.url=https://hub.docker.com/r/ifn4/$name
   --label org.opencontainers.image.documentation=https://hub.docker.com/r/ifn4/$name
   --label org.opencontainers.image.version=$latest_version
+  # Reported by jmail-http in its startup log.
+  --build-arg JMAIL_VERSION=$latest_version
   -f Containerfile
   -t $image:$latest_version
   -t $image:latest

@@ -43,6 +43,11 @@ authenticate; the second one also sends a message. They read `JMAIL_TEST_SERVER`
 falling back to the placeholder values in the file. `mk test-auth` and `mk test-send` run them against the local dev
 container with those variables already set.
 
+`test-http.sh` does the same over the optional HTTP API, using curl: it checks health, a missing token, malformed
+JSON, the sender policy, a real send, and an idempotent replay, and exits non-zero on the first failure. It reads
+`JMAIL_TEST_HTTP_SERVER`, `JMAIL_TEST_HTTP_PORT` and `JMAIL_TEST_HTTP_TOKEN`. `mk test-http` runs it against the dev
+container; see [HTTP API](http-api.md).
+
 ## TLS
 
 On first boot jmail generates a self-signed ECDSA (P-384) certificate valid for ten years, with `JMAIL_ORIGIN`
@@ -72,6 +77,14 @@ Every message sent through jmail is signed as `sendonly._domainkey.$JMAIL_ORIGIN
 `*@$JMAIL_ORIGIN` only, with `SubDomains no`, so a message whose `From:` address is at another domain (or at a
 subdomain) is passed through **unsigned** rather than rejected. Keep senders inside `JMAIL_ORIGIN`, or extend the
 signing and key tables — see [Customization](../advanced/customization.md).
+
+OpenDKIM signs the RFC 6376 recommended header set, and the template widens it through the `SignHeaders` directive
+with `Message-ID`, `MIME-Version`, `Content-Type`, `Content-Transfer-Encoding`, `List-Unsubscribe-Post` and
+`Feedback-ID`. Only headers present in the message are hashed, so a multipart message has no top-level
+`Content-Transfer-Encoding` to cover. The tradeoff of covering the MIME headers is that anything which legitimately
+rewrites `Content-Type` in transit, for example a re-encoding mailing-list gateway, will also break the signature. The
+`h=` tag in the signature is the authoritative list of what was covered, and `postcat -q <queue-id>` inside the
+container shows it with the message.
 
 To rotate the key, create the trigger file and restart:
 

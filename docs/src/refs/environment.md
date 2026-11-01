@@ -17,6 +17,26 @@ The defaults exist so the image can be started for a quick test, but they are pl
 
 All variables are read when the container starts. Changing them on an existing container has no effect — recreate it.
 
+## HTTP API variables
+
+The HTTP submission API is off unless `JMAIL_HTTP_TOKEN` is set. See
+[HTTP API](../guide/http-api.md).
+
+| Variable | Default | Used for |
+| --- | --- | --- |
+| `JMAIL_HTTP_TOKEN` | *(unset)* | Bearer token for `POST /v1/send`. Empty means the API stays disabled. Use `openssl rand -hex 32`. |
+| `JMAIL_HTTP_LISTEN` | `0.0.0.0:8080` | Listen address inside the container. |
+| `JMAIL_HTTP_ALLOWED_FROM` | `JMAIL_ORIGIN` | Space or comma separated sender domains. `*` accepts any sender, which does **not** make them DKIM-signed. |
+| `JMAIL_HTTP_SMTP_ADDR` | `127.0.0.1:25` | Where the service hands the message to Postfix. Loopback is trusted through `mynetworks`. |
+| `JMAIL_HTTP_MAX_BYTES` | `5M` | Cap on the request body and on the decoded attachments. Accepts a `K`/`M`/`G` suffix. |
+| `JMAIL_HTTP_MAX_RECIPIENTS` | `50` | Cap on `to` + `cc` + `bcc` after de-duplication. |
+| `JMAIL_HTTP_MAX_ATTACHMENTS` | `10` | Cap on the number of attachments. |
+| `JMAIL_HTTP_CONCURRENCY` | `16` | Simultaneous SMTP submissions. |
+| `JMAIL_HTTP_RATE` | `10` | Accepted requests per second, as a token bucket. |
+| `JMAIL_HTTP_RATE_BURST` | `20` | Bucket size, so short spikes up to this size pass. |
+| `JMAIL_HTTP_TIMEOUT` | `30s` | Overall deadline for one SMTP submission. |
+| `JMAIL_HTTP_IDEMPOTENCY_TTL` | `1h` | How long an `Idempotency-Key` replay is remembered. |
+
 ## Volumes
 
 | Path | Contents |
@@ -40,6 +60,7 @@ See [Customization](../advanced/customization.md).
 | --- | --- |
 | `25` | SMTP in front of postscreen. |
 | `587` | Submission with STARTTLS and SASL authentication (declared with `EXPOSE`). |
+| `8080` | HTTP API, plain HTTP, only serving when `JMAIL_HTTP_TOKEN` is set. |
 | `8892` | OpenDKIM milter socket, bound to `127.0.0.1` only. |
 
 ## Files in the image
@@ -51,6 +72,7 @@ See [Customization](../advanced/customization.md).
 | `/etc/opendkim/opendkim.conf`, `key.table`, `signing.table`, `trusted.hosts` | Rendered on every start. |
 | `/etc/sasl2/smtpd.conf`, `/etc/syslog.conf` | Rendered on every start. |
 | `/usr/local/bin/test-mail.sh` | Generated helper that mails `JMAIL_ROOT_EMAIL`. |
+| `/usr/local/bin/jmail-http` | Static binary serving the optional HTTP API. |
 | `/etc/jmail/postfix.d` | User overrides applied on top of the rendered `main.cf`. |
 | `/etc/jmail/init.d` | User hooks, run last by `init-mailer-config`. |
 | `/etc/postfix/ssl/.generate` | Presence triggers regeneration of the self-signed certificate on the next start. |
@@ -58,7 +80,7 @@ See [Customization](../advanced/customization.md).
 
 ## Services
 
-s6-overlay supervises one oneshot and four long-running services. `s6-rc -a list` lists them, and the per-service
+s6-overlay supervises one oneshot and five long-running services. `s6-rc -a list` lists them, and the per-service
 scripts live under `/etc/s6-overlay/s6-rc.d`:
 
 | Service | Purpose |
@@ -68,6 +90,7 @@ scripts live under `/etc/s6-overlay/s6-rc.d`:
 | `svc-opendkim` | OpenDKIM milter. |
 | `svc-saslauthd` | `saslauthd` with the `sasldb` backend. |
 | `svc-postfix` | Postfix in the foreground. |
+| `svc-jmail-http` | HTTP submission API. Parks itself when `JMAIL_HTTP_TOKEN` is unset, because a static s6 bundle cannot be conditional. |
 
 Services are listed in `/etc/s6-overlay/user-bundles.d/user/contents.d`, which is the s6-overlay 3.2.3+ bundle
 location.

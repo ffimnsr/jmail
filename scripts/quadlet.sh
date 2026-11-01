@@ -5,6 +5,7 @@ set -euo pipefail
 SCOPE="user"
 OUTPUT_DIR="quadlet"
 INSTALL=0
+HTTP=0
 
 usage() {
   cat <<'EOF'
@@ -16,6 +17,7 @@ install them.
 Options:
   --scope user|system   Install target. Default: user.
   --output <dir>        Where to write the generated files. Default: quadlet/.
+  --http                Publish the HTTP submission API and enable it.
   --install             Copy the files into place, reload systemd and start the unit.
   -h, --help            Show this help message.
 
@@ -28,10 +30,15 @@ Environment:
   JMAIL_SMTP_PASSWORD   SASL password. Generated when unset.
   JMAIL_MYNETWORKS      Unauthenticated relay networks. Default: 127.0.0.0/8
   JMAIL_PUBLISH_PORT    Host port published as container 587. Default: 10587
+  JMAIL_HTTP_TOKEN      HTTP API bearer token. Setting it also enables the API.
+                        Generated when --http is given without it.
+  JMAIL_HTTP_PUBLISH_PORT  Host port published as container 8080. Default: 10808
+  JMAIL_HTTP_PUBLISH_BIND  Interface for that port. Default: 127.0.0.1, because the
+                        container serves plain HTTP there.
 
 Examples:
   scripts/quadlet.sh
-  scripts/quadlet.sh --install
+  scripts/quadlet.sh --http --install
   sudo scripts/quadlet.sh --scope system --install
 EOF
 }
@@ -55,6 +62,10 @@ while (($# > 0)); do
       ;;
     --install)
       INSTALL=1
+      shift
+      ;;
+    --http)
+      HTTP=1
       shift
       ;;
     -h|--help)
@@ -105,6 +116,35 @@ else
   smtp_password="$JMAIL_SMTP_PASSWORD"
 fi
 
+# The token is the switch for the API, so supplying one enables it just like
+# --http does. The port is published on loopback by default: the container serves
+# plain HTTP there, and a token over cleartext should not be exposed by accident.
+http_enabled=0
+if ((HTTP)) || [[ -n "${JMAIL_HTTP_TOKEN:-}" ]]; then
+  http_enabled=1
+fi
+
+http_token=""
+http_publish_port=""
+http_container_lines=""
+generated_token=0
+if ((http_enabled)); then
+  if [[ -n "${JMAIL_HTTP_TOKEN:-}" ]]; then
+    http_token="$JMAIL_HTTP_TOKEN"
+  else
+    command -v openssl >/dev/null 2>&1 || die "openssl is required to generate JMAIL_HTTP_TOKEN"
+    http_token="$(openssl rand -hex 32)"
+    generated_token=1
+  fi
+  http_publish_port="${JMAIL_HTTP_PUBLISH_PORT:-10808}"
+  http_publish_bind="${JMAIL_HTTP_PUBLISH_BIND:-127.0.0.1}"
+  http_container_lines="# HTTP API: plain HTTP on the container side, put TLS in front of it.
+PublishPort=${http_publish_bind}:${http_publish_port}:8080"
+  health_cmd="nc -z 127.0.0.1 587 && nc -z 127.0.0.1 8080"
+else
+  health_cmd="nc -z 127.0.0.1 587"
+fi
+
 mkdir -p "$OUTPUT_DIR"
 
 cat >"${OUTPUT_DIR}/jmail.container" <<EOF
@@ -125,9 +165,10 @@ Volume=${DATA_ROOT}/spool:/var/spool/postfix:Z
 Volume=${DATA_ROOT}/postfix.d:/etc/jmail/postfix.d:Z
 Volume=${DATA_ROOT}/init.d:/etc/jmail/init.d:Z
 PublishPort=${publish_port}:587
+${http_container_lines}
 # Podman does not carry the image HEALTHCHECK into the container, so it is
 # declared here. 127.0.0.1 is explicit because Postfix runs ipv4-only.
-HealthCmd=nc -z 127.0.0.1 587
+HealthCmd=${health_cmd}
 HealthInterval=30s
 HealthRetries=3
 HealthStartPeriod=30s
@@ -151,11 +192,26 @@ JMAIL_SMTP_PASSWORD=${smtp_password}
 JMAIL_MYNETWORKS=${mynetworks}
 EOF
 
+if ((http_enabled)); then
+  printf 'JMAIL_HTTP_TOKEN=%s\n' "$http_token" >>"${OUTPUT_DIR}/jmail.env"
+fi
+
 chmod 0600 "${OUTPUT_DIR}/jmail.env"
 
 printf 'Wrote %s and %s\n' "${OUTPUT_DIR}/jmail.container" "${OUTPUT_DIR}/jmail.env"
 if ((generated_password)); then
   printf 'Generated SMTP password for %s: %s\n' "$smtp_user" "$smtp_password"
+fi
+if ((http_enabled)); then
+  printf 'HTTP API enabled on %s:%s\n' "$http_publish_bind" "$http_publish_port"
+  if ((generated_token)); then
+    printf 'Generated HTTP API token: %s\n' "$http_token"
+  else
+    printf 'HTTP API token taken from JMAIL_HTTP_TOKEN\n'
+  fi
+  if [[ "$http_publish_bind" == "127.0.0.1" ]]; then
+    printf 'It is bound to loopback; set JMAIL_HTTP_PUBLISH_BIND=0.0.0.0 to reach it from another host.\n'
+  fi
 fi
 
 if ((INSTALL == 0)); then

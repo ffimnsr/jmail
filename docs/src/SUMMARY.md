@@ -6,6 +6,7 @@
 
 - [Installation](guide/installation.md)
 - [Usage](guide/usage.md)
+- [HTTP API](guide/http-api.md)
 
 # Advanced
 
