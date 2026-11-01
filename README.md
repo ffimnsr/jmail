@@ -48,11 +48,12 @@ Environment=JMAIL_ORIGIN=<mail-server-hostname or mail-origin>
 Environment=JMAIL_ROOT_EMAIL=<root-email>
 Environment=JMAIL_SMTP_USER=<username>
 Environment=JMAIL_SMTP_PASSWORD=<password>
-HealthCmd=["CMD", "nc -vz localhost 25"]
+# Docker uses the image's HEALTHCHECK; podman needs it declared here.
+HealthCmd=nc -z 127.0.0.1 587
 HealthInterval=30s
-HealthRetries=5
-HealthStartPeriod=20s
-HealthTimeout=3s
+HealthRetries=3
+HealthStartPeriod=30s
+HealthTimeout=5s
 PublishPort=10587:587
 
 [Service]

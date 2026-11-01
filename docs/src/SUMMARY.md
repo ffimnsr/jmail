@@ -1,6 +1,6 @@
 # Summary
 
-[Introduction](README.dm)
+[Introduction](README.md)
 
 # User Guide
 

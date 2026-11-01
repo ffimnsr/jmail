@@ -24,6 +24,9 @@ dockerize \
   -template $TEMPLATES_DIR/syslog/syslog.conf.tmpl:/etc/syslog.conf \
   -template $TEMPLATES_DIR/scripts/test-mail.sh.tmpl:/usr/local/bin/test-mail.sh
 
+# dockerize writes rendered files with default permissions, so make the helper runnable.
+chmod 0755 /usr/local/bin/test-mail.sh
+
 echo "Creating temporary self-signed certificate for $JMAIL_ORIGIN"
 echo "Copy everything between the dashed lines into your mail client to trust the certificate"
 openssl req -x509 -noenc -sha384 -days 3650 -utf8 \
@@ -61,15 +64,15 @@ OPENDKIM_KEYS_DIR=/etc/opendkim/keys/$JMAIL_ORIGIN
 if [[ ! -d "${OPENDKIM_KEYS_DIR}" ]]; then
   echo "Creating DKIM keys for $JMAIL_ORIGIN"
   mkdir -p $OPENDKIM_KEYS_DIR
-  opendkim-genkey -b 1024 -d $JMAIL_ORIGIN -D $OPENDKIM_KEYS_DIR -s sendonly
+  opendkim-genkey -b 2048 -d $JMAIL_ORIGIN -D $OPENDKIM_KEYS_DIR -s sendonly
   chown -R 0:0 $OPENDKIM_KEYS_DIR/sendonly.private
 fi
 
 OPENDKIM_KEYS_GENERATE_FILE=/etc/opendkim/keys/$JMAIL_ORIGIN/.generate
 echo "Checking DKIM regeneration trigger for $JMAIL_ORIGIN"
-if [[ -f "${OPENDKIM_GENERATE_FILE}" ]]; then
+if [[ -f "${OPENDKIM_KEYS_GENERATE_FILE}" ]]; then
   echo "Re-generate DKIM keys for $JMAIL_ORIGIN"
-  opendkim-genkey -b 1024 -d $JMAIL_ORIGIN -D $OPENDKIM_KEYS_DIR -s sendonly
+  opendkim-genkey -b 2048 -d $JMAIL_ORIGIN -D $OPENDKIM_KEYS_DIR -s sendonly
   chown -R 0:0 $OPENDKIM_KEYS_DIR/sendonly.private
   rm -f "${OPENDKIM_KEYS_GENERATE_FILE}"
 fi

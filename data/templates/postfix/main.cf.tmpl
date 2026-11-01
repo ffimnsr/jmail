@@ -1,5 +1,5 @@
 maillog_file = /dev/stdout
-compatibility_level = 3.8
+compatibility_level = 3.11
 biff = no
 append_dot_mydomain = no
 allow_percent_hack = no
@@ -7,7 +7,7 @@ allow_percent_hack = no
 myhostname = {{ .Env.JMAIL_HOSTNAME }}
 myorigin = {{ .Env.JMAIL_ORIGIN }}
 mydestination = localhost.localdomain, localhost
-mynetworks = 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 127.0.0.0/8
+mynetworks = {{ .Env.JMAIL_MYNETWORKS }}
 
 # Incoming
 smtpd_banner = $myhostname ESMTP
@@ -18,7 +18,7 @@ smtpd_tls_cert_file = /etc/postfix/ssl/server.crt
 smtpd_tls_key_file = /etc/postfix/ssl/server.key
 smtpd_tls_security_level = may
 smtpd_tls_session_cache_database = lmdb:${data_directory}/smtpd_scache
-smtpd_tls_auth_only = no
+smtpd_tls_auth_only = yes
 smtpd_tls_loglevel = 1
 
 # SASL Auth
@@ -38,7 +38,7 @@ smtp_tls_loglevel = 1
 
 # Postscreen
 postscreen_access_list = permit_mynetworks
-postscreen_blacklist_action = drop
+postscreen_denylist_action = drop
 postscreen_greet_action = enforce
 
 # Milters
