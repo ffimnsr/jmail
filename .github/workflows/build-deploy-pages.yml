@@ -31,7 +31,9 @@ jobs:
         id: pages
         uses: actions/configure-pages@v6
       - name: Build with mdBook
-        run: mdbook build -d ../book docs
+        # mdBook 0.5 made --dest-dir relative to the cwd (it used to be relative
+        # to the book root), so this must stay cwd-relative to land in ./book.
+        run: mdbook build -d ./book docs
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v5
         with:
