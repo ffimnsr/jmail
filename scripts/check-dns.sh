@@ -332,7 +332,10 @@ local_dkim_p() {
   [[ -n "$raw" ]] || return 1
   printf '%s' "$raw" |
     sed -e 's/;-----.*$//' |
-    tr -d '"\n' |
+    # All whitespace, not just newlines: sendonly.txt splits the record into
+    # quoted chunks separated by tabs and spaces, and stopping p= at the first
+    # tab truncates the key to one chunk.
+    tr -d '[:space:]"' |
     sed -n 's/.*p=\([A-Za-z0-9+/=]*\).*/\1/p'
 }
 
@@ -404,7 +407,7 @@ check_port25() {
 check_domain() {
   local domain="$1" ip="$2" hostname="$3"
   local record records record_count p_spf published_p p_dkim local_p mx dkim_raw
-  local spf_ok=0 dkim_ok=0 dmarc dmarc_count p rua pct
+  local spf_ok=0 dkim_ok=0 dmarc dmarc_count p rua pct parent parent_p
 
   printf '\n%s\n' "$domain"
 
@@ -478,6 +481,17 @@ check_domain() {
       detail "  podman exec $CONTAINER cat /etc/opendkim/keys/$domain/sendonly.txt"
     else
       detail "the installer prints the record once the container has started"
+    fi
+    # A subdomain's record belongs in the parent zone. Publishing it at the
+    # parent apex is a common way to get this wrong, so name it when the key
+    # sitting there is the one this container generated.
+    parent="${domain#*.}"
+    if [[ "$parent" != "$domain" && -n "$local_p" ]]; then
+      parent_p="$(tag_value "$(dig_txt "sendonly._domainkey.$parent" | grep -i 'v=DKIM1' | head -1 || true)" p)"
+      if [[ -n "$parent_p" && "$parent_p" == "$local_p" ]]; then
+        detail "this key is published at sendonly._domainkey.$parent instead"
+        detail "create it as sendonly._domainkey.$domain"
+      fi
     fi
   else
     dkim_ok=1
