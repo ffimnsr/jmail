@@ -85,13 +85,14 @@ name. Header values must be single-line.
 ### Sender policy
 
 `from` must be in a domain listed in `JMAIL_HTTP_ALLOWED_FROM`, which defaults to
-`JMAIL_ORIGIN`. This is stricter than it looks: the OpenDKIM signing table covers
-`*@JMAIL_ORIGIN` with `SubDomains no`, so mail from any other domain would go out
-**unsigned**. Such a request is rejected with `422 sender_not_allowed` instead of
-being sent unsigned.
+every domain in `JMAIL_DOMAINS` (so to `JMAIL_ORIGIN` alone on a single-domain
+setup). This is stricter than it looks: the OpenDKIM signing table covers exactly
+`*@<domain>` for those domains with `SubDomains no`, so mail from any other domain
+would go out **unsigned**. Such a request is rejected with `422 sender_not_allowed`
+instead of being sent unsigned.
 
-Set `JMAIL_HTTP_ALLOWED_FROM` to a space or comma separated list to widen the
-policy, and `*` to accept any sender. A wildcard does not make other domains
+Set `JMAIL_HTTP_ALLOWED_FROM` to a space or comma separated list to narrow the policy
+to a subset, and `*` to accept any sender. A wildcard does not make other domains
 DKIM-signed; it only stops the API from refusing them.
 
 ### Bulk and marketing mail
@@ -123,7 +124,7 @@ Yahoo require one-click unsubscribe from bulk senders, which is the
   is meaningless without a URI a mailbox provider can POST to.
 - jmail is outbound-only, so a `mailto:` unsubscribe address has to be handled
   somewhere else. Prefer the HTTPS URI.
-- Keep `from` inside `JMAIL_ORIGIN`. Bulk mail from a domain that jmail does not
+- Keep `from` inside `JMAIL_DOMAINS`. Bulk mail from a domain that jmail does not
   sign fails DMARC alignment at the large providers, and the unsubscribe headers
   do not compensate for that.
 - These headers are written before the milter runs, so OpenDKIM signs them.

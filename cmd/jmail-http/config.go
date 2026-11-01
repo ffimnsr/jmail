@@ -15,9 +15,12 @@ type config struct {
 	listen string
 	token  string
 
-	// origin is JMAIL_ORIGIN: the domain OpenDKIM signs. hostname is
-	// JMAIL_HOSTNAME, used for the EHLO name and the Message-ID domain.
+	// origin is JMAIL_ORIGIN, the primary signing domain. domains is the full
+	// JMAIL_DOMAINS list with origin first: OpenDKIM signs exactly these, so it
+	// doubles as the default sender policy. hostname is JMAIL_HOSTNAME, used for
+	// the EHLO name and the Message-ID domain.
 	origin   string
+	domains  []string
 	hostname string
 
 	smtpAddr    string
@@ -64,6 +67,7 @@ func loadConfig() (*config, error) {
 	if cfg.origin == "" {
 		return nil, fmt.Errorf("JMAIL_ORIGIN must be set; it defines the default allowed sending domain")
 	}
+	cfg.domains = parseDomains(envString("JMAIL_DOMAINS", ""), cfg.origin)
 
 	var err error
 	if cfg.smtpTimeout, err = envDuration("JMAIL_HTTP_TIMEOUT", 30*time.Second); err != nil {
@@ -102,7 +106,7 @@ func loadConfig() (*config, error) {
 		cfg.idempotencyDir = ""
 	}
 
-	cfg.allowedFrom, cfg.allowAnyFrom = parseAllowedFrom(envString("JMAIL_HTTP_ALLOWED_FROM", ""), cfg.origin)
+	cfg.allowedFrom, cfg.allowAnyFrom = parseAllowedFrom(envString("JMAIL_HTTP_ALLOWED_FROM", ""), cfg.domains)
 	return cfg, nil
 }
 
@@ -115,9 +119,10 @@ func (c *config) allowedDomains() []string {
 	return c.allowedFrom
 }
 
-// fromAllowed enforces a match against JMAIL_ORIGIN rather than a subdomain
-// wildcard on purpose: the OpenDKIM signing table covers exactly
-// *@JMAIL_ORIGIN with SubDomains no, so anything else leaves unsigned.
+// fromAllowed enforces a match against the configured domains rather than a
+// subdomain wildcard on purpose: the OpenDKIM signing table covers exactly
+// *@<domain> for each entry in JMAIL_DOMAINS with SubDomains no, so anything
+// else leaves the message unsigned.
 func (c *config) fromAllowed(addr string) bool {
 	if c.allowAnyFrom {
 		return true
@@ -139,20 +144,14 @@ func addressDomain(addr string) string {
 	return strings.TrimSuffix(strings.ToLower(addr[at+1:]), ".")
 }
 
-func parseAllowedFrom(raw, origin string) (domains []string, allowAny bool) {
+func parseAllowedFrom(raw string, defaults []string) (domains []string, allowAny bool) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return []string{origin}, false
+		return append([]string(nil), defaults...), false
 	}
 
 	seen := make(map[string]bool)
-	for _, field := range strings.FieldsFunc(raw, func(r rune) bool {
-		return r == ',' || r == ' ' || r == '\t' || r == '\n'
-	}) {
-		field = strings.ToLower(strings.TrimPrefix(strings.TrimSpace(field), "@"))
-		if field == "" {
-			continue
-		}
+	for _, field := range splitDomainList(raw) {
 		if field == "*" {
 			return nil, true
 		}
@@ -163,9 +162,67 @@ func parseAllowedFrom(raw, origin string) (domains []string, allowAny bool) {
 		domains = append(domains, field)
 	}
 	if len(domains) == 0 {
-		return []string{origin}, false
+		return append([]string(nil), defaults...), false
 	}
 	return domains, false
+}
+
+// parseDomains normalizes JMAIL_DOMAINS and always puts the primary domain
+// first, so the signing table and the default sender policy agree. The init
+// script is the authority on rejecting bad values; here an implausible name is
+// dropped rather than allowed through to the signing tables.
+func parseDomains(raw, origin string) []string {
+	domains := []string{origin}
+	seen := map[string]bool{origin: true}
+	for _, domain := range splitDomainList(raw) {
+		if seen[domain] || !isDomainName(domain) {
+			continue
+		}
+		seen[domain] = true
+		domains = append(domains, domain)
+	}
+	return domains
+}
+
+// splitDomainList splits on commas and whitespace and normalizes each entry the
+// way the init script does, so "a.example,b.example" and "a.example b.example"
+// are both accepted.
+func splitDomainList(raw string) []string {
+	var fields []string
+	for _, field := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	}) {
+		field = strings.ToLower(strings.TrimSpace(field))
+		field = strings.TrimPrefix(field, "@")
+		field = strings.TrimSuffix(field, ".")
+		if field == "" {
+			continue
+		}
+		fields = append(fields, field)
+	}
+	return fields
+}
+
+// isDomainName mirrors the check the init script applies to JMAIL_DOMAINS, so a
+// standalone run of this binary cannot accept a domain Postfix would refuse.
+func isDomainName(name string) bool {
+	if name == "" || len(name) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(name, ".") {
+		if label == "" || len(label) > 63 {
+			return false
+		}
+		if label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, r := range label {
+			if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func envString(key, def string) string {

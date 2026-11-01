@@ -3,6 +3,8 @@ SyslogSuccess           yes
 
 Canonicalization        relaxed/simple
 
+# Only the fallback when SigningTable has no match; every domain in
+# JMAIL_DOMAINS gets its own entry there, so this stays the primary domain.
 Domain                  {{ .Env.JMAIL_ORIGIN }}
 
 # Change domain to `s` as there's no inbound email to verify.

@@ -39,8 +39,10 @@ podman run -d --name jmail \
 ```
 
 - `-h` must match `JMAIL_HOSTNAME`. Postfix announces it in the SMTP banner and receivers check its PTR record.
-- `JMAIL_ORIGIN` is the domain that gets DKIM-signed, and the realm the SASL user is created in. Only `From:`
-  addresses at this domain are signed.
+- `JMAIL_ORIGIN` is the primary domain: the realm the SASL user is created in, and the domain used wherever a single
+  one is needed. Only `From:` addresses at a domain jmail signs are DKIM-signed, which by default is `JMAIL_ORIGIN`.
+- Add more domains with `-e JMAIL_DOMAINS='example.com,other.example'`. Each one gets its own DKIM key, certificate
+  SAN and signing-table entry; `JMAIL_ORIGIN` is always included, so listing it again is harmless.
 - If port `587` is taken, or you run rootless, publish a higher port instead, for example `-p 10587:587`.
 - On Docker, use `docker run` and drop the `:z` suffixes. Those relabel the mounts for SELinux.
 
@@ -50,8 +52,8 @@ Then watch the logs:
 podman logs -f jmail
 ```
 
-On first boot the container renders its configuration, generates a 2048-bit DKIM key and a self-signed ECDSA
-certificate, creates the SASL account, and prints the DKIM TXT record you have to publish.
+On first boot the container renders its configuration, generates a 2048-bit DKIM key per signed domain and a
+self-signed ECDSA certificate, creates the SASL account, and prints the DKIM TXT records you have to publish.
 
 ### Send through it
 
@@ -118,17 +120,19 @@ side, so passing a local test send is not enough.
 - [ ] **No `MX` record is needed.** jmail is outbound-only: it does not accept inbound mail, so an MX record would
       only advertise a service this container does not run. If the domain already has a null MX (`v=MX:0 .`), leave
       it alone.
-- [ ] `DKIM` — publish the record printed at startup, at `sendonly._domainkey.<JMAIL_ORIGIN>`. It is also written to
-      `/etc/opendkim/keys/<JMAIL_ORIGIN>/sendonly.txt`, which you can read from the running container with
-      `podman exec jmail sh -c 'cat /etc/opendkim/keys/$JMAIL_ORIGIN/sendonly.txt'`. A 2048-bit key produces
+- [ ] `DKIM` — publish the record printed at startup, once per domain in `JMAIL_DOMAINS`, at
+      `sendonly._domainkey.<domain>`. It is also written to
+      `/etc/opendkim/keys/<domain>/sendonly.txt`, which you can read from the running container with
+      `podman exec jmail sh -c 'cat /etc/opendkim/keys/example.com/sendonly.txt'`. A 2048-bit key produces
       roughly 400 characters, which has to stay split into quoted 255-character strings on one line.
-- [ ] `SPF` — on the domain you send `From:`, which for this image means `JMAIL_ORIGIN`:
+- [ ] `SPF` — on every domain you send `From:`, which for this image means each domain in `JMAIL_DOMAINS`:
       ```
       v=spf1 a:<mail-server-hostname> ip4:<server-ip> -all
       ```
       `-all` is a hard fail; that is what you want once the record is correct. A `From:` address at any other
-      domain goes out unsigned and unaligned, so either keep senders inside `JMAIL_ORIGIN` or extend the OpenDKIM
-      signing table (see [Customization](docs/src/advanced/customization.md)).
+      domain goes out unsigned and unaligned, so add the domain to `JMAIL_DOMAINS` — see
+      [Multiple domains](docs/src/advanced/multiple-domains.md) — or extend the OpenDKIM signing table by hand
+      ([Customization](docs/src/advanced/customization.md)).
 - [ ] Outbound port `25` is not blocked. Many cloud and VPS providers block it by default; mail then queues with a
       `connect to ...:25` error instead of being delivered.
 - [ ] `DMARC` — start permissive so you can read the reports, then tighten:

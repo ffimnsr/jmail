@@ -9,6 +9,47 @@ mkdir -p /var/spool/postfix/pid \
 
 mkdir -p /etc/sasl2
 
+# Domains
+# JMAIL_DOMAINS lists every domain that gets an OpenDKIM key and a signing
+# table entry. JMAIL_ORIGIN is always included and stays the primary domain:
+# myorigin, the certificate CN, the DKIM report address and the SASL realm all
+# use it. The normalized list is exported as JMAIL_DOMAINS_CSV because the
+# templates cannot normalize "a.com, b.com" on their own.
+JMAIL_DOMAINS_CSV=""
+JMAIL_CERT_SANS=""
+declare -A seen_domains=()
+
+add_domain() {
+  local domain
+  domain="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  domain="${domain#"${domain%%[![:space:]]*}"}"
+  domain="${domain%"${domain##*[![:space:]]}"}"
+  domain="${domain#@}"
+  domain="${domain%.}"
+  if [[ -z "$domain" ]]; then
+    return 0
+  fi
+  if [[ ! "$domain" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$ ]]; then
+    echo "error: invalid mail domain '$1' (from JMAIL_ORIGIN or JMAIL_DOMAINS)" >&2
+    exit 1
+  fi
+  if [[ -n "${seen_domains[$domain]:-}" ]]; then
+    return 0
+  fi
+  seen_domains[$domain]=1
+  JMAIL_DOMAINS_CSV="${JMAIL_DOMAINS_CSV:+${JMAIL_DOMAINS_CSV},}${domain}"
+  JMAIL_CERT_SANS="${JMAIL_CERT_SANS:+${JMAIL_CERT_SANS},}DNS:${domain}"
+}
+
+add_domain "$JMAIL_ORIGIN"
+# Word splitting is intended: JMAIL_DOMAINS is a comma or space separated list.
+for domain in ${JMAIL_DOMAINS//,/ }; do
+  add_domain "$domain"
+done
+export JMAIL_DOMAINS_CSV
+
+echo "Signing DKIM for: $JMAIL_DOMAINS_CSV"
+
 TEMPLATES_DIR=/etc/templates
 dockerize \
   -template $TEMPLATES_DIR/postfix/aliases.tmpl:/etc/postfix/aliases \
@@ -66,7 +107,7 @@ openssl req -x509 -noenc -sha384 -days 3650 -utf8 \
   -addext "basicConstraints=critical,CA:FALSE" \
   -addext="extendedKeyUsage=critical,serverAuth" \
   -addext "keyUsage=critical,nonRepudiation,digitalSignature,keyEncipherment,keyAgreement" \
-  -addext "subjectAltName=DNS:$JMAIL_ORIGIN"
+  -addext "subjectAltName=$JMAIL_CERT_SANS"
 
 cat $TEMPLATES_DIR/postfix/ssl/server.crt
 echo "-----"
@@ -94,24 +135,37 @@ postmap /etc/postfix/generic
 newaliases
 
 # TODO: Add support for Ed25519 dkim keys
-OPENDKIM_KEYS_DIR=/etc/opendkim/keys/$JMAIL_ORIGIN
-if [[ ! -d "${OPENDKIM_KEYS_DIR}" ]]; then
-  echo "Creating DKIM keys for $JMAIL_ORIGIN"
-  mkdir -p $OPENDKIM_KEYS_DIR
-  opendkim-genkey -b 2048 -d $JMAIL_ORIGIN -D $OPENDKIM_KEYS_DIR -s sendonly
-  chown -R 0:0 $OPENDKIM_KEYS_DIR/sendonly.private
-fi
+# One key per domain, kept in a directory named after it. Adding a domain to
+# JMAIL_DOMAINS therefore only creates a new key; existing keys are untouched.
+#
+# The test is for the key file rather than the directory: /etc/opendkim/keys is
+# commonly a mounted volume, which exists but starts empty, and a directory can
+# also survive a failed generate. Either way a missing key is what OpenDKIM
+# refuses to start with.
+for domain in ${JMAIL_DOMAINS_CSV//,/ }; do
+  OPENDKIM_KEYS_DIR=/etc/opendkim/keys/$domain
+  if [[ ! -f "${OPENDKIM_KEYS_DIR}/sendonly.private" ]]; then
+    echo "Creating DKIM keys for $domain"
+    mkdir -p $OPENDKIM_KEYS_DIR
+    opendkim-genkey -b 2048 -d $domain -D $OPENDKIM_KEYS_DIR -s sendonly
+    chown -R 0:0 $OPENDKIM_KEYS_DIR/sendonly.private
+    # A fresh key satisfies a pending rotation, so the trigger must not make the
+    # next start generate a second one.
+    rm -f "${OPENDKIM_KEYS_DIR}/.generate"
+  fi
 
-OPENDKIM_KEYS_GENERATE_FILE=/etc/opendkim/keys/$JMAIL_ORIGIN/.generate
-echo "Checking DKIM regeneration trigger for $JMAIL_ORIGIN"
-if [[ -f "${OPENDKIM_KEYS_GENERATE_FILE}" ]]; then
-  echo "Re-generate DKIM keys for $JMAIL_ORIGIN"
-  opendkim-genkey -b 2048 -d $JMAIL_ORIGIN -D $OPENDKIM_KEYS_DIR -s sendonly
-  chown -R 0:0 $OPENDKIM_KEYS_DIR/sendonly.private
-  rm -f "${OPENDKIM_KEYS_GENERATE_FILE}"
-fi
+  OPENDKIM_KEYS_GENERATE_FILE=$OPENDKIM_KEYS_DIR/.generate
+  echo "Checking DKIM regeneration trigger for $domain"
+  if [[ -f "${OPENDKIM_KEYS_GENERATE_FILE}" ]]; then
+    echo "Re-generate DKIM keys for $domain"
+    opendkim-genkey -b 2048 -d $domain -D $OPENDKIM_KEYS_DIR -s sendonly
+    chown -R 0:0 $OPENDKIM_KEYS_DIR/sendonly.private
+    rm -f "${OPENDKIM_KEYS_GENERATE_FILE}"
+  fi
 
-cat $OPENDKIM_KEYS_DIR/sendonly.txt
+  echo "Publish this DKIM record at sendonly._domainkey.$domain:"
+  cat $OPENDKIM_KEYS_DIR/sendonly.txt
+done
 
 echo "Setting up SASL password for jmail user"
 echo "${JMAIL_SMTP_PASSWORD}" | saslpasswd2 -p -c -u "${JMAIL_ORIGIN}" "${JMAIL_SMTP_USER}"

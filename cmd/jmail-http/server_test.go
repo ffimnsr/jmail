@@ -140,6 +140,7 @@ func testConfig(addr string) *config {
 		listen:         "127.0.0.1:0",
 		token:          testToken,
 		origin:         "example.com",
+		domains:        []string{"example.com"},
 		hostname:       "mail.example.com",
 		smtpAddr:       addr,
 		smtpTimeout:    5 * time.Second,
@@ -510,12 +511,14 @@ func TestDotStuffing(t *testing.T) {
 }
 
 func TestConfigFromPolicy(t *testing.T) {
-	domains, any := parseAllowedFrom("", "example.com")
-	if any || len(domains) != 1 || domains[0] != "example.com" {
+	signed := []string{"example.com", "second.example"}
+
+	domains, any := parseAllowedFrom("", signed)
+	if any || fmt.Sprint(domains) != "[example.com second.example]" {
 		t.Fatalf("default = %v, any = %v", domains, any)
 	}
 
-	domains, any = parseAllowedFrom(" @Example.com , other.org ", "example.com")
+	domains, any = parseAllowedFrom(" @Example.com , other.org ", signed)
 	if any {
 		t.Fatal("unexpected wildcard")
 	}
@@ -523,7 +526,7 @@ func TestConfigFromPolicy(t *testing.T) {
 		t.Fatalf("domains = %v", domains)
 	}
 
-	if _, any = parseAllowedFrom("*", "example.com"); !any {
+	if _, any = parseAllowedFrom("*", signed); !any {
 		t.Fatal("expected wildcard")
 	}
 }

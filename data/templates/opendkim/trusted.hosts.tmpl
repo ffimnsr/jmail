@@ -5,6 +5,8 @@ localhost
 10.0.0.0/8
 172.16.0.0/12
 192.168.0.0/16
+{{- range $domain := split .Env.JMAIL_DOMAINS_CSV "," }}
 
-{{ .Env.JMAIL_ORIGIN }}
-*.{{ .Env.JMAIL_ORIGIN }}
+{{ $domain }}
+*.{{ $domain }}
+{{- end }}

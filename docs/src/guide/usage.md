@@ -14,7 +14,8 @@ Use these settings in your application, mail client or another mail server:
 
 The account is created in the SASL database under the `JMAIL_ORIGIN` realm, so `JMAIL_SMTP_USER` and
 `user@JMAIL_ORIGIN` both authenticate. Authentication is only offered after STARTTLS
-(`smtpd_tls_auth_only = yes`), so clients must upgrade the connection before logging in.
+(`smtpd_tls_auth_only = yes`), so clients must upgrade the connection before logging in. One account covers every
+domain in `JMAIL_DOMAINS`: domains are signing identities, not users, and there is no per-domain credential.
 
 Relaying is only permitted for authenticated clients and for the networks listed in `JMAIL_MYNETWORKS`. It defaults to
 `127.0.0.0/8`, which means only the container itself; everything else has to authenticate.
@@ -51,16 +52,17 @@ container; see [HTTP API](http-api.md).
 ## TLS
 
 On first boot jmail generates a self-signed ECDSA (P-384) certificate valid for ten years, with `JMAIL_ORIGIN`
-as its common name and subject alternative name. The certificate and key live in `/etc/postfix/ssl/`, which is the
-volume to persist (mounting all of `/etc/postfix` also works, since that is a volume in the image as well).
+as its common name and a subject alternative name for every domain in `JMAIL_DOMAINS`. The certificate and key live in
+`/etc/postfix/ssl/`, which is the volume to persist (mounting all of `/etc/postfix` also works, since that is a volume
+in the image as well).
 
 To use a real certificate, put your own `server.crt` and `server.key` in that directory and restart the container.
 jmail installs its generated certificate only when `server.crt` or `server.key` is missing, so your own files are
 left alone. (The log still prints the self-signed certificate it generates at startup, because it does not know yet
 whether one of the two files is going to be supplied later.)
 
-To regenerate the self-signed certificate (for example after changing `JMAIL_ORIGIN`), create the trigger file and
-restart:
+To regenerate the self-signed certificate (for example after changing `JMAIL_ORIGIN` or `JMAIL_DOMAINS`), create the
+trigger file and restart:
 
 ```sh
 touch /etc/postfix/ssl/.generate   # inside the /etc/postfix/ssl volume
@@ -69,14 +71,20 @@ podman restart jmail
 
 ## DKIM
 
-A 2048-bit RSA key is generated for `JMAIL_ORIGIN` on first boot and stored in
-`/etc/opendkim/keys/$JMAIL_ORIGIN/sendonly.private`. The matching DNS record is printed to the log as
-`sendonly._domainkey IN TXT (...)`, and is also written to `sendonly.txt` next to the key.
+jmail signs every domain listed in `JMAIL_DOMAINS`, which always includes `JMAIL_ORIGIN` as the primary domain. A
+2048-bit RSA key is generated per domain on first boot and stored in `/etc/opendkim/keys/<domain>/sendonly.private`,
+so adding a domain creates one new key directory and leaves the existing keys untouched. The matching DNS records are
+printed to the log, each labelled with the name it belongs under, and are also written to `sendonly.txt` next to the
+key.
 
-Every message sent through jmail is signed as `sendonly._domainkey.$JMAIL_ORIGIN`. The signing table maps
-`*@$JMAIL_ORIGIN` only, with `SubDomains no`, so a message whose `From:` address is at another domain (or at a
-subdomain) is passed through **unsigned** rather than rejected. Keep senders inside `JMAIL_ORIGIN`, or extend the
-signing and key tables — see [Customization](../advanced/customization.md).
+Every message sent through jmail is signed as `sendonly._domainkey.<domain>`, where the domain is the one in `From:`.
+The signing table maps `*@<domain>` for each configured domain, with `SubDomains no`, so a message whose `From:`
+address is at a domain outside the list (or at a subdomain of one) is passed through **unsigned** rather than rejected.
+Set `JMAIL_DOMAINS` to sign more domains, or extend the signing and key tables by hand for anything the list cannot
+express — see [Customization](../advanced/customization.md).
+
+A single key per domain is deliberate: the selector and the key belong to the domain, so merging domains onto one key
+would make a compromise impossible to scope and a rotation impossible to stage per domain.
 
 OpenDKIM signs the RFC 6376 recommended header set, and the template widens it through the `SignHeaders` directive
 with `Message-ID`, `MIME-Version`, `Content-Type`, `Content-Transfer-Encoding`, `List-Unsubscribe-Post` and
@@ -86,14 +94,16 @@ rewrites `Content-Type` in transit, for example a re-encoding mailing-list gatew
 `h=` tag in the signature is the authoritative list of what was covered, and `postcat -q <queue-id>` inside the
 container shows it with the message.
 
-To rotate the key, create the trigger file and restart:
+To rotate the key for one domain, create the trigger file in that domain's directory and restart:
 
 ```sh
-touch /etc/opendkim/keys/$JMAIL_ORIGIN/.generate   # inside the /etc/opendkim/keys volume
+mkdir -p /etc/opendkim/keys/other.example               # inside the /etc/opendkim/keys volume
+touch /etc/opendkim/keys/other.example/.generate
 podman restart jmail
 ```
 
-A new key replaces the old one, so update the DKIM record in DNS before the next message goes out.
+A new key replaces the old one, so update that domain's DKIM record in DNS before the next message goes out. Rotating
+one domain does not touch the keys of the others.
 
 ### Publishing a 2048-bit key
 
@@ -136,8 +146,9 @@ local test send does not prove any of them.
       receivers compare it with the banner hostname.
 - [ ] **No `MX` record is required.** jmail is outbound-only and does not accept inbound mail, so an MX record would
       advertise a service the container does not run. A pre-existing null MX (`v=MX:0 .`) is fine.
-- [ ] `DKIM` record at `sendonly._domainkey.<JMAIL_ORIGIN>`, from the log or `sendonly.txt`.
-- [ ] `SPF` record on the domain you send `From:`, which here means `JMAIL_ORIGIN`. The example is a hard fail, not
+- [ ] `DKIM` record at `sendonly._domainkey.<domain>`, once per domain in `JMAIL_DOMAINS`, from the log or that
+domain's `sendonly.txt`.
+- [ ] `SPF` record on the domain you send `From:`, once per domain in `JMAIL_DOMAINS`. The example is a hard fail, not
       a soft fail:
   ```
   v=spf1 a:<mail-server-hostname> ip4:<server-ip> -all

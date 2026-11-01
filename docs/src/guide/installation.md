@@ -45,7 +45,8 @@ podman run -d --name jmail \
 If you use Docker, replace `podman` with `docker` and drop the `:z` suffixes on the volume mounts.
 
 Set `-h` to the same value as `JMAIL_HOSTNAME`: Postfix uses the hostname in its banner and receivers check its PTR
-record, while the generated TLS certificate uses `JMAIL_ORIGIN` as its common name and subject alternative name.
+record, while the generated TLS certificate uses `JMAIL_ORIGIN` as its common name and a subject alternative name for
+every domain in `JMAIL_DOMAINS`.
 
 If port `587` is already in use, or you run rootless, publish a higher host port instead, for example
 `-p 10587:587`, and point your clients at that port.
@@ -154,7 +155,7 @@ The repository ships a generator for the unit and its environment file:
 sudo ./scripts/quadlet.sh --scope system --install
 ```
 
-It reads `JMAIL_IMAGE`, `JMAIL_HOSTNAME`, `JMAIL_ORIGIN`, `JMAIL_ROOT_EMAIL`, `JMAIL_SMTP_USER`,
+It reads `JMAIL_IMAGE`, `JMAIL_HOSTNAME`, `JMAIL_ORIGIN`, `JMAIL_DOMAINS`, `JMAIL_ROOT_EMAIL`, `JMAIL_SMTP_USER`,
 `JMAIL_SMTP_PASSWORD`, `JMAIL_MYNETWORKS` and `JMAIL_PUBLISH_PORT` from the environment, generates a random SMTP
 password when none is given, and writes the environment file with `0600` permissions. `--help` lists the defaults
 for each variable.

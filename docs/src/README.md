@@ -10,7 +10,7 @@ and it relays your messages to the destination mail server.
 ## Features
 
 - Authenticated SMTP submission with STARTTLS (`PLAIN`, `LOGIN`, `CRAM-MD5`, `DIGEST-MD5`, `NTLM`).
-- Outgoing mail signed with DKIM.
+- Outgoing mail signed with DKIM, for one domain or several.
 - Self-signed TLS certificate generated on first boot, easy to replace with your own.
 - Configuration driven by environment variables and templates, so you can reconfigure without rebuilding.
 - Multi-arch images for `linux/amd64` and `linux/arm64`.

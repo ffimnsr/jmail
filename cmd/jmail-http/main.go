@@ -27,8 +27,8 @@ func main() {
 			"length", len(cfg.token))
 	}
 	if cfg.allowAnyFrom {
-		slog.Warn("JMAIL_HTTP_ALLOWED_FROM is '*': messages from any domain are accepted, and only mail from JMAIL_ORIGIN is DKIM-signed",
-			"origin", cfg.origin)
+		slog.Warn("JMAIL_HTTP_ALLOWED_FROM is '*': messages from any domain are accepted, and only mail from JMAIL_ORIGIN or JMAIL_DOMAINS is DKIM-signed",
+			"domains", cfg.domains)
 	}
 
 	srv := newServer(cfg)
@@ -57,6 +57,7 @@ func main() {
 			"addr", cfg.listen,
 			"submit_to", cfg.smtpAddr,
 			"origin", cfg.origin,
+			"domains", cfg.domains,
 			"allowed_from", cfg.allowedDomains(),
 			"max_bytes", cfg.maxBytes,
 			"rate", cfg.rate,

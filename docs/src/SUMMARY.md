@@ -11,6 +11,7 @@
 # Advanced
 
 - [Customization](advanced/customization.md)
+- [Multiple domains](advanced/multiple-domains.md)
 
 # Reference Guide
 

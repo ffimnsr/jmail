@@ -25,6 +25,8 @@ Environment:
   JMAIL_IMAGE           Image reference. Default: ghcr.io/ffimnsr/jmail:latest
   JMAIL_HOSTNAME        Postfix myhostname. Default: mail.example.com
   JMAIL_ORIGIN          Signing domain. Default: $JMAIL_HOSTNAME
+  JMAIL_DOMAINS         Extra signing domains, space or comma separated.
+                        Default: unset, so only $JMAIL_ORIGIN is signed.
   JMAIL_ROOT_EMAIL      Root alias target. Default: postmaster@$JMAIL_ORIGIN
   JMAIL_SMTP_USER       SASL user. Default: jmail
   JMAIL_SMTP_PASSWORD   SASL password. Generated when unset.
@@ -102,6 +104,7 @@ esac
 image="${JMAIL_IMAGE:-ghcr.io/ffimnsr/jmail:latest}"
 hostname="${JMAIL_HOSTNAME:-mail.example.com}"
 origin="${JMAIL_ORIGIN:-$hostname}"
+domains="${JMAIL_DOMAINS:-}"
 root_email="${JMAIL_ROOT_EMAIL:-postmaster@${origin}}"
 smtp_user="${JMAIL_SMTP_USER:-jmail}"
 mynetworks="${JMAIL_MYNETWORKS:-127.0.0.0/8}"
@@ -192,6 +195,10 @@ JMAIL_SMTP_USER=${smtp_user}
 JMAIL_SMTP_PASSWORD=${smtp_password}
 JMAIL_MYNETWORKS=${mynetworks}
 EOF
+
+if [[ -n "${domains}" ]]; then
+  printf 'JMAIL_DOMAINS=%s\n' "${domains// /,}" >>"${OUTPUT_DIR}/jmail.env"
+fi
 
 if ((http_enabled)); then
   printf 'JMAIL_HTTP_TOKEN=%s\n' "$http_token" >>"${OUTPUT_DIR}/jmail.env"

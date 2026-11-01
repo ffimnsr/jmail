@@ -5,7 +5,8 @@
 | Variable | Default | Used for |
 | --- | --- | --- |
 | `JMAIL_HOSTNAME` | `example.com` | Postfix `myhostname`: SMTP banner and `smtpd_sasl_local_domain`. |
-| `JMAIL_ORIGIN` | `example.com` | Postfix `myorigin`, the OpenDKIM signing `Domain`, the SASL realm, and the generated TLS certificate's CN/SAN. |
+| `JMAIL_ORIGIN` | `example.com` | The primary domain: Postfix `myorigin`, the default OpenDKIM signing domain, the SASL realm, and the generated TLS certificate's CN. |
+| `JMAIL_DOMAINS` | *(unset)* | Additional domains to sign, space or comma separated. `JMAIL_ORIGIN` is always included and stays primary, so a single-domain setup can leave this unset. |
 | `JMAIL_ROOT_EMAIL` | `user@example.com` | Destination of the `root` alias and of `/usr/local/bin/test-mail.sh`. |
 | `JMAIL_SMTP_USER` | `jmail` | SASL username created at startup. |
 | `JMAIL_SMTP_PASSWORD` | `mysecretpassword` | SASL password for `JMAIL_SMTP_USER`. |
@@ -14,6 +15,13 @@
 
 The defaults exist so the image can be started for a quick test, but they are placeholder values: always set
 `JMAIL_HOSTNAME`, `JMAIL_ORIGIN`, `JMAIL_ROOT_EMAIL`, `JMAIL_SMTP_USER` and `JMAIL_SMTP_PASSWORD` in production.
+
+`JMAIL_DOMAINS` is the one exception: it is optional, and listing the same domain twice is harmless because entries are
+lowercased, trimmed and de-duplicated. An entry that is not a plausible hostname stops the container at startup rather
+than producing a signing table OpenDKIM cannot use. Each domain gets its own DKIM key, its own certificate SAN, and its
+own `*@<domain>` signing-table entry; everything that has to be singular (`myorigin`, the SASL realm, the certificate
+CN, the DKIM report address) keeps using `JMAIL_ORIGIN`, so the primary domain should be the one you send the most mail
+from.
 
 All variables are read when the container starts. Changing them on an existing container has no effect — recreate it.
 
@@ -26,7 +34,7 @@ The HTTP submission API is off unless `JMAIL_HTTP_TOKEN` is set. See
 | --- | --- | --- |
 | `JMAIL_HTTP_TOKEN` | *(unset)* | Bearer token for `POST /v1/send`. Empty means the API stays disabled. Use `openssl rand -hex 32`. |
 | `JMAIL_HTTP_LISTEN` | `0.0.0.0:8080` | Listen address inside the container. |
-| `JMAIL_HTTP_ALLOWED_FROM` | `JMAIL_ORIGIN` | Space or comma separated sender domains. `*` accepts any sender, which does **not** make them DKIM-signed. |
+| `JMAIL_HTTP_ALLOWED_FROM` | `JMAIL_DOMAINS` | Space or comma separated sender domains. `*` accepts any sender, which does **not** make them DKIM-signed. |
 | `JMAIL_HTTP_SMTP_ADDR` | `127.0.0.1:25` | Where the service hands the message to Postfix. Loopback is trusted through `mynetworks`. |
 | `JMAIL_HTTP_MAX_BYTES` | `5M` | Cap on the request body and on the decoded attachments. Accepts a `K`/`M`/`G` suffix. |
 | `JMAIL_HTTP_MAX_RECIPIENTS` | `50` | Cap on `to` + `cc` + `bcc` after de-duplication. |
@@ -45,7 +53,7 @@ The HTTP submission API is off unless `JMAIL_HTTP_TOKEN` is set. See
 | Path | Contents |
 | --- | --- |
 | `/etc/postfix` | Rendered Postfix configuration, `aliases`, `canonical`, `generic` databases and `ssl/server.{crt,key}`. |
-| `/etc/opendkim/keys` | DKIM private keys at `/etc/opendkim/keys/$JMAIL_ORIGIN/sendonly.private`. |
+| `/etc/opendkim/keys` | One DKIM private key per signed domain, at `/etc/opendkim/keys/<domain>/sendonly.private`. |
 | `/var/spool/postfix` | Postfix queue. |
 | `/var/lib/jmail-http` | HTTP API idempotency records, so a client retry still replays after a restart. Only written when the API is enabled. |
 
@@ -89,7 +97,7 @@ See [Customization](../advanced/customization.md).
 | `/etc/jmail/postfix.d` | User overrides applied on top of the rendered `main.cf`. |
 | `/etc/jmail/init.d` | User hooks, run last by `init-mailer-config`. |
 | `/etc/postfix/ssl/.generate` | Presence triggers regeneration of the self-signed certificate on the next start. |
-| `/etc/opendkim/keys/$JMAIL_ORIGIN/.generate` | Presence triggers a new DKIM key on the next start. |
+| `/etc/opendkim/keys/<domain>/.generate` | Presence triggers a new DKIM key for that domain on the next start. |
 
 ## Services
 

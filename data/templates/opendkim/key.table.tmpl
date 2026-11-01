@@ -1,1 +1,3 @@
-sendonly._domainkey.{{ .Env.JMAIL_ORIGIN }} {{ .Env.JMAIL_ORIGIN }}:sendonly:/etc/opendkim/keys/{{ .Env.JMAIL_ORIGIN }}/sendonly.private
+{{ range $domain := split .Env.JMAIL_DOMAINS_CSV "," -}}
+sendonly._domainkey.{{ $domain }} {{ $domain }}:sendonly:/etc/opendkim/keys/{{ $domain }}/sendonly.private
+{{ end -}}
