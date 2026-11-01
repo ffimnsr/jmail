@@ -1,0 +1,26 @@
+name: go-checks
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: go-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: tidy, format, vet, lint, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Run Go checks
+        uses: ./.github/actions/go-checks

@@ -3,6 +3,7 @@
 # Pre-push gate for the Go submission service in cmd/jmail-http.
 #
 # Runs: go mod tidy (diff only), gofmt, go vet, golangci-lint, go test -race.
+# CI runs the same gate from .github/actions/go-checks; keep the two in sync.
 # The whole module is checked rather than only the pushed range: the package is
 # small, and a stale file elsewhere in the tree is still a broken push.
 #

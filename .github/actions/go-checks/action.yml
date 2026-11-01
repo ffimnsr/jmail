@@ -1,0 +1,37 @@
+name: go-checks
+description: Tidy, format, vet, lint and test the Go module.
+
+# Shared by .github/workflows/go-checks.yml and the verify job of the release
+# workflow so the two cannot drift. .githooks/pre-push mirrors these steps for
+# local pushes.
+runs:
+  using: composite
+  steps:
+    - name: Set up Go
+      uses: actions/setup-go@v7
+      with:
+        go-version-file: go.mod
+        cache: true
+    - name: Check go.mod and go.sum are tidy
+      shell: bash
+      run: go mod tidy -diff
+    - name: Check formatting
+      shell: bash
+      run: |
+        unformatted="$(gofmt -l .)"
+        if [ -n "$unformatted" ]; then
+          echo "::error::gofmt found files that need formatting"
+          printf '%s\n' "$unformatted"
+          exit 1
+        fi
+    - name: Vet
+      shell: bash
+      run: go vet ./...
+    - name: Lint
+      uses: golangci/golangci-lint-action@v9
+      with:
+        version: v2.12.2
+        args: --timeout=5m
+    - name: Test with the race detector
+      shell: bash
+      run: go test -race -count=1 ./...

@@ -11,7 +11,87 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # A release tag normally points at a commit that already passed go-checks on a
+  # branch push, so reuse that run instead of testing the same tree twice. The
+  # tag and the branch are often pushed together, so this waits for the run to
+  # appear and finish before deciding. If the commit has no branch run at all
+  # (e.g. an old tag), the same checks are run here.
+  verify:
+    name: verify go checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Reuse the go-checks run for this commit when there is one
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          sha="$(git rev-parse HEAD)"
+          echo "commit: ${sha}"
+
+          started=$SECONDS
+          # Long enough for the run created by a simultaneous branch push to show up.
+          appearance_deadline=$((started + 60))
+          # Upper bound on waiting for that run to finish.
+          completion_deadline=$((started + 300))
+
+          while true; do
+            if ! runs=$(gh api "repos/${REPO}/actions/workflows/go-checks.yml/runs?head_sha=${sha}&per_page=50" 2>/dev/null); then
+              echo "::warning::cannot read go-checks runs for ${sha}; running the checks here"
+              break
+            fi
+
+            # Only branch pushes count: a pull_request run for the same SHA says
+            # nothing about the state of the branch the tag was cut from.
+            success=$(printf '%s' "$runs" | jq '[.workflow_runs[] | select(.event == "push" and .status == "completed" and .conclusion == "success")] | length')
+            failed=$(printf '%s' "$runs" | jq '[.workflow_runs[] | select(.event == "push" and .status == "completed" and .conclusion == "failure")] | length')
+            pending=$(printf '%s' "$runs" | jq '[.workflow_runs[] | select(.event == "push" and .status != "completed")] | length')
+            total=$(printf '%s' "$runs" | jq '[.workflow_runs[] | select(.event == "push")] | length')
+
+            if [ "$success" -gt 0 ]; then
+              echo "go-checks already passed for ${sha}; skipping the local run"
+              echo "reused=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # A pending re-run outranks an older failure, so only fail fast when
+            # nothing else is in flight.
+            if [ "$failed" -gt 0 ] && [ "$pending" -eq 0 ]; then
+              echo "::error::go-checks failed for ${sha}; fix the branch before tagging"
+              exit 1
+            fi
+            if [ "$pending" -gt 0 ] && [ "$SECONDS" -lt "$completion_deadline" ]; then
+              echo "waiting for go-checks on ${sha} to finish"
+              sleep 10
+              continue
+            fi
+            # Only wait for a run to appear when none exists yet; a completed but
+            # inconclusive run will not become a success by waiting.
+            if [ "$total" -eq 0 ] && [ "$SECONDS" -lt "$appearance_deadline" ]; then
+              echo "waiting for a go-checks run for ${sha}"
+              sleep 5
+              continue
+            fi
+            break
+          done
+
+          echo "no completed go-checks run for ${sha}; running the checks here"
+          echo "reused=false" >> "$GITHUB_OUTPUT"
+
+      # Shared with .github/workflows/go-checks.yml, and only run when this
+      # commit has no green run there to reuse.
+      - name: Run Go checks
+        if: steps.gate.outputs.reused != 'true'
+        uses: ./.github/actions/go-checks
+
   build:
+    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: read
