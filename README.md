@@ -228,6 +228,7 @@ them.
 | `mk dev` / `mk logs` / `mk stop` | Run in the foreground, follow logs, remove the dev container |
 | `mk clean` | Remove the dev container and the local `.jmail/` state directory |
 | `mk test-mail` | Send the built-in test message to `JMAIL_ROOT_EMAIL` |
+| `mk send-test-mail` | Send an interactive test message through the submission port |
 | `mk test-auth` / `mk test-send` | Check STARTTLS + AUTH, then deliver a message through the container |
 | `mk test-go` | `go vet` and unit tests for the HTTP submission service |
 | `mk test-http` | `curl` smoke test of the HTTP API against the dev container |

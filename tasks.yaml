@@ -88,6 +88,12 @@ tasks:
     commands:
       - podman exec "$JMAIL_TEST_CONTAINER" test-mail.sh
 
+  send-test-mail:
+    description: Send an interactive test message through the submission port
+    commands:
+      - command: ./scripts/send-test-mail.sh
+        interactive: true
+
   test-auth:
     description: Check STARTTLS and SASL authentication against the dev container
     commands:

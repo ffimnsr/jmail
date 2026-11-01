@@ -44,6 +44,19 @@ authenticate; the second one also sends a message. They read `JMAIL_TEST_SERVER`
 falling back to the placeholder values in the file. `mk test-auth` and `mk test-send` run them against the local dev
 container with those variables already set.
 
+`scripts/send-test-mail.sh` is the interactive shortcut. It asks for the server, port, credentials, From and To
+addresses, subject and body (a random quote by default), prints a summary, sends over STARTTLS and reports what the
+server accepted. On the machine where jmail is installed it pre-fills everything from `jmail.env` and connects to
+`127.0.0.1`, because the public hostname usually needs NAT hairpinning from the host itself. It works without a clone:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ffimnsr/jmail/master/scripts/send-test-mail.sh | bash
+```
+
+For scripted use, pass `--yes` with `--to`, `--from`, `--subject` and the rest; `--dry-run` prints the message without
+connecting. `mk send-test-mail` runs it from the repository, and `./scripts/check-dns.sh` verifies the records that
+decide whether the message authenticates.
+
 `test-http.sh` does the same over the optional HTTP API, using curl: it checks health, a missing token, malformed
 JSON, the sender policy, a real send, and an idempotent replay, and exits non-zero on the first failure. It reads
 `JMAIL_TEST_HTTP_SERVER`, `JMAIL_TEST_HTTP_PORT` and `JMAIL_TEST_HTTP_TOKEN`. `mk test-http` runs it against the dev
