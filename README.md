@@ -181,10 +181,17 @@ them.
 | `mk test-go` | `go vet` and unit tests for the HTTP submission service |
 | `mk test-http` | `curl` smoke test of the HTTP API against the dev container |
 | `mk dkim` | Print the DKIM TXT record to publish |
+| `mk install-githooks` | Point git at `.githooks/` so the pre-push checks run |
+| `mk uninstall-githooks` | Restore git's default `.git/hooks` directory |
 | `mk quadlet-generate` | Write `quadlet/jmail.container` and `quadlet/jmail.env` |
 | `mk quadlet-install` | Install and start the user-scope quadlet |
 | `mk release-patch` | Cut a release; `release-minor` and `release-major` also exist |
 | `mk docs` / `mk docs-build` | Serve the documentation locally / build it into `./book` |
+
+`mk install-githooks` sets `core.hooksPath` for this clone only. The pre-push hook checks the Go module
+(`go mod tidy` diff, `gofmt`, `go vet`, `golangci-lint`, `go test -race`) and blocks the push on failure;
+bypass a single push with `git push --no-verify`. If `golangci-lint` is not installed the hook warns and
+skips that step unless `JMAIL_HOOK_STRICT=1` is set.
 
 ## Releasing
 

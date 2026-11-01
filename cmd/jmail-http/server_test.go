@@ -20,10 +20,9 @@ const testToken = "test-token-0123456789abcdef"
 // fakeSMTP is just enough of a submission server for the client to talk to:
 // EHLO, MAIL, RCPT, DATA, QUIT, and an optional rejection at RCPT time.
 type fakeSMTP struct {
-	ln         net.Listener
-	queueID    string
-	rejectBody []string
-	failRCPT   bool
+	ln       net.Listener
+	queueID  string
+	failRCPT bool
 
 	mu   sync.Mutex
 	msgs [][]byte
@@ -61,7 +60,7 @@ func (f *fakeSMTP) messages() [][]byte {
 }
 
 func (f *fakeSMTP) handle(conn net.Conn) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
@@ -320,7 +319,7 @@ func TestSendRequiresToken(t *testing.T) {
 			if err != nil {
 				t.Fatalf("do request: %v", err)
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 			if resp.StatusCode != http.StatusUnauthorized {
 				t.Fatalf("status = %d, want 401", resp.StatusCode)
 			}
@@ -340,7 +339,7 @@ func TestHealthzNeedsNoToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}

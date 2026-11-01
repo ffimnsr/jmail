@@ -106,7 +106,7 @@ func (s *submitter) submit(ctx context.Context, from string, recipients []string
 	if err != nil {
 		return "", &smtpError{stage: "connect", err: err}
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if err := conn.SetDeadline(deadline); err != nil {
 		return "", &smtpError{stage: "connect", err: err}

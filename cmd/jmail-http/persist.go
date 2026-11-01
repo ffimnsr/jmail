@@ -63,7 +63,7 @@ func (s *idemStore) load() (map[string]idemRecord, error) {
 		}
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	reader := bufio.NewReader(file)
 	for {
@@ -128,36 +128,39 @@ func (s *idemStore) compactWith(live func() map[string]idemRecord) error {
 		return err
 	}
 
+	// discard drops the partial temp file. The caller's error is the one worth
+	// reporting, so cleanup failures are deliberately ignored.
+	discard := func() {
+		_ = file.Close()
+		_ = os.Remove(temporary)
+	}
+
 	writer := bufio.NewWriter(file)
 	for _, record := range records {
 		line, err := json.Marshal(record)
 		if err != nil {
-			file.Close()
-			os.Remove(temporary)
+			discard()
 			return err
 		}
 		if _, err := writer.Write(append(line, '\n')); err != nil {
-			file.Close()
-			os.Remove(temporary)
+			discard()
 			return err
 		}
 	}
 	if err := writer.Flush(); err != nil {
-		file.Close()
-		os.Remove(temporary)
+		discard()
 		return err
 	}
 	if err := file.Sync(); err != nil {
-		file.Close()
-		os.Remove(temporary)
+		discard()
 		return err
 	}
 	if err := file.Close(); err != nil {
-		os.Remove(temporary)
+		_ = os.Remove(temporary)
 		return err
 	}
 	if err := os.Rename(temporary, s.path); err != nil {
-		os.Remove(temporary)
+		_ = os.Remove(temporary)
 		return err
 	}
 

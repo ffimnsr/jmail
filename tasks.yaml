@@ -139,6 +139,18 @@ tasks:
         JMAIL_TEST_RECEIVER="$JMAIL_ROOT_EMAIL" \
           ./test-http.sh
 
+  install-githooks:
+    description: Point git at the repository's .githooks directory
+    commands:
+      - git config --local core.hooksPath .githooks
+      - chmod +x .githooks/*
+
+  uninstall-githooks:
+    description: Restore git's default hooks directory (.git/hooks)
+    ignore_errors: true
+    commands:
+      - git config --local --unset core.hooksPath
+
   dkim:
     description: Print the DKIM TXT record that has to be published in DNS
     commands:
