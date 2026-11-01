@@ -109,7 +109,7 @@ After=network-online.target
 [Container]
 ContainerName=jmail
 Image=ghcr.io/ffimnsr/jmail:latest
-Pull=always
+Pull=newer
 HostName=<mail-server-hostname>
 Volume=/etc/container-configs/jmail/postfix-ssl:/etc/postfix/ssl:z
 Volume=/etc/container-configs/jmail/opendkim-keys:/etc/opendkim/keys:z
@@ -158,13 +158,51 @@ sudo ./scripts/quadlet.sh --scope system --install
 It reads `JMAIL_IMAGE`, `JMAIL_HOSTNAME`, `JMAIL_ORIGIN`, `JMAIL_DOMAINS`, `JMAIL_ROOT_EMAIL`, `JMAIL_SMTP_USER`,
 `JMAIL_SMTP_PASSWORD`, `JMAIL_MYNETWORKS` and `JMAIL_PUBLISH_PORT` from the environment, generates a random SMTP
 password when none is given, and writes the environment file with `0600` permissions. `--help` lists the defaults
-for each variable.
+for each variable. The unit uses `Pull=newer`, so a restart pulls only when the registry has a newer image than the
+local one (it still pulls on the first boot, when no local image exists); this needs Podman 4.5 or newer.
 
 Pass `--http` to publish the HTTP API as well, or set `JMAIL_HTTP_TOKEN` and it is enabled implicitly. The token is
 generated when you do not supply one, written to the same environment file, and printed once. The API is published on
 `127.0.0.1:10808` by default, because the container serves it over plain HTTP: use `JMAIL_HTTP_PUBLISH_PORT` and
 `JMAIL_HTTP_PUBLISH_BIND=0.0.0.0` only when a TLS terminator on another host fronts it. See
 [HTTP API](http-api.md).
+
+### Interactive installer
+
+`./install.sh` in the repository root does the same in one step for the current user: it asks for the hostname, the
+sending domain (single or multiple), the SMTP credentials, the submission port and whether the jmail-http API is
+enabled, writes the quadlet to `~/.config/containers/systemd/jmail.container` and the environment file to
+`~/.config/jmail/jmail.env`, then starts `jmail.service` with `systemctl --user`. At the end it prints the SMTP
+credentials, the generated HTTP API token (33 characters) when that is enabled, and the DKIM, SPF and DMARC records
+to publish for every signing domain. The installer keeps the data under `~/.local/share/jmail` and reads the
+environment file back on the next run, so re-running it changes settings instead of starting over.
+
+The environment file also holds the installer's own settings (`JMAIL_IMAGE`, `JMAIL_PUBLISH_PORT`,
+`JMAIL_HTTP_PUBLISH_BIND`, `JMAIL_HTTP_PUBLISH_PORT`) so a re-run remembers them; the container ignores those keys.
+Variables you add by hand, such as `JMAIL_TLS_LEVEL`, are preserved across a reconfigure.
+
+Running it again on an existing installation offers two modes, which can also be selected directly:
+
+```sh
+./install.sh --reconfigure  # change settings; keeps data and DKIM keys, restarts the service
+./install.sh --update       # pull the newest image and restart; settings untouched
+```
+
+Reconfiguring restarts a running service so the new environment takes effect, and asks whether to pull a newer
+image first. Updating always pulls, and does so before stopping anything, so a failed pull leaves the running
+container and its queue alone. `--image` changes or pins the image in either mode.
+
+The generated unit uses `Pull=missing`, so a plain `systemctl --user restart` never changes the image on its own;
+the installer is the update path. With `--yes`, reconfigure keeps the local image and `--update` is the explicit way
+to pull.
+
+Use `--yes` for a non-interactive run driven by `JMAIL_*` variables, and `--generate-only` to write the files
+without touching systemd. `./install.sh --help` lists every prompt and the variable it sets. It can also be piped
+straight into a shell:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ffimnsr/jmail/master/install.sh | bash
+```
 
 ## Upgrading
 

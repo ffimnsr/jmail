@@ -198,6 +198,23 @@ tasks:
     commands:
       - ./scripts/quadlet.sh --install
 
+  install:
+    description: Run the interactive installer for a user-scope jmail service
+    commands:
+      - command: ./install.sh
+        interactive: true
+
+  reconfigure:
+    description: Re-run the installer to change settings of the user-scope service
+    commands:
+      - command: ./install.sh --reconfigure
+        interactive: true
+
+  update:
+    description: Pull the newest jmail image and restart the user-scope service
+    commands:
+      - ./install.sh --update --yes
+
   quadlet-install-system:
     description: Generate, install and start the system-scope quadlet (needs root)
     commands:

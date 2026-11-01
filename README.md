@@ -19,6 +19,46 @@ podman pull ghcr.io/ffimnsr/jmail:latest
 Images are published for `linux/amd64` and `linux/arm64`, tagged `latest`, `X.Y.Z`, `X.Y` and `X`, and signed with
 cosign.
 
+### Interactive installer (user scope)
+
+`install.sh` sets up a rootless Podman service for the current user, no root required. It asks for the hostname,
+the sending domain (single or multiple), the SMTP credentials, the submission port and whether the jmail-http API
+should be enabled, then writes a quadlet and a `0600` environment file under your home directory and starts the
+service with `systemctl --user`. At the end it prints the SMTP credentials, the generated HTTP API token (33
+characters) when that is enabled, and the DKIM, SPF and DMARC records to publish for every signing domain.
+
+```sh
+./install.sh                  # ask for every value
+./install.sh --yes            # non-interactive: take JMAIL_* variables and defaults
+./install.sh --generate-only  # write the files, do not start anything
+
+# or, without cloning the repository
+curl -fsSL https://raw.githubusercontent.com/ffimnsr/jmail/master/install.sh | bash
+```
+
+| Path | Purpose |
+| --- | --- |
+| `~/.config/containers/systemd/jmail.container` | Quadlet unit, generated as `jmail.service` |
+| `~/.config/jmail/jmail.env` | Environment file (`0600`), also read back on the next run |
+| `~/.local/share/jmail/` | Certificate, DKIM keys, queue and HTTP idempotency records |
+
+The installer reuses the values in `jmail.env` when it runs again, so it is also how you change a setting. Running
+it on an existing installation asks whether to reconfigure or update, or you can say which explicitly:
+
+```sh
+./install.sh --reconfigure  # change settings; keeps data and DKIM keys, restarts the service
+./install.sh --update       # pull the newest image and restart; settings untouched
+```
+
+Reconfiguring restarts an already-running service, because a running container keeps the environment it was started
+with, and asks whether to pull a newer image first. Updating always pulls, and does so before stopping anything, so
+a failed pull leaves the running container and its queue alone. `--image` changes or pins the image in either mode.
+
+The generated unit uses `Pull=missing`, so a plain `systemctl --user restart` never changes the image on its own;
+the installer is the update path. With `--yes`, reconfigure keeps the local image and `--update` is the explicit way
+to pull. If the service cannot bind the submission port, run the installer again with a higher one, for example
+`10587`.
+
 ### Quick start
 
 ```sh
@@ -189,6 +229,9 @@ them.
 | `mk uninstall-githooks` | Restore git's default `.git/hooks` directory |
 | `mk quadlet-generate` | Write `quadlet/jmail.container` and `quadlet/jmail.env` |
 | `mk quadlet-install` | Install and start the user-scope quadlet |
+| `mk install` | Run the interactive installer for a user-scope service |
+| `mk reconfigure` | Re-run the installer to change settings |
+| `mk update` | Pull the newest image and restart the user-scope service |
 | `mk release-patch` | Cut a release; `release-minor` and `release-major` also exist |
 | `mk docs` / `mk docs-build` | Serve the documentation locally / build it into `./book` |
 
@@ -206,8 +249,13 @@ scripts/release.sh --patch     # or --minor, --major, or an explicit version
 ```
 
 The script runs the release gates, writes the `CHANGELOG.md` section from the conventional commits since the
-previous tag, creates the `release: vX.Y.Z` commit, tags it and pushes. Pushing the tag is what builds and
-publishes `ghcr.io/ffimnsr/jmail` and deploys the documentation.
+previous tag, creates the `release: vX.Y.Z` commit, tags it, pushes, and creates the GitHub release whose notes are
+that changelog section. Pushing the tag is what builds and publishes `ghcr.io/ffimnsr/jmail` and deploys the
+documentation.
+
+Creating the GitHub release needs an authenticated [`gh`](https://cli.github.com) (`gh auth login`). When `gh` is
+missing or not logged in, the tag push and the image build still happen, and the script prints the
+`gh release create` command to run by hand. Pass `--skip-github-release` to skip that step entirely.
 
 ## License
 jmail is licensed under the Apache-2.0 License. See [LICENSE](LICENSE) file for more details.

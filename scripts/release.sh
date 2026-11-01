@@ -12,7 +12,8 @@ usage() {
 Usage: scripts/release.sh [options] [<version>]
 
 Run the release gates, write a CHANGELOG.md section from the commits since the previous
-release, create a "release: vX.Y.Z" commit, tag it, and optionally push commit and tag.
+release, create a "release: vX.Y.Z" commit, tag it, push commit and tag, and create the
+matching GitHub release whose notes are that changelog section.
 
 Pushing the tag is what starts the image build (build-push-release-images.yml) and the
 documentation deploy (build-deploy-pages.yml).
@@ -25,6 +26,7 @@ Options:
   --patch        Increment patch version.
   --skip-build   Skip the local container image build.
   --skip-push    Skip pushing the release commit and tag to origin.
+  --skip-github-release  Skip creating the GitHub release for the pushed tag.
   -h, --help     Show this help message.
 
 Examples:
@@ -310,9 +312,56 @@ ensure_remote_exists() {
   git remote get-url "$REMOTE_NAME" >/dev/null 2>&1 || die "git remote '$REMOTE_NAME' is not configured"
 }
 
+# A tag alone is not a release: without this, the tag page has no notes and the
+# repository's Releases list stays empty. The notes are the changelog section
+# written for this version, so the release and CHANGELOG.md cannot drift.
+create_github_release() {
+  local tag_name="$1"
+  local version="$2"
+  local notes_file
+
+  notes_file="$(mktemp)"
+  # The trailing space matters: without it "## 1.0.1" also matches "## 1.0.10".
+  awk -v header="## $version" '
+    $0 == header || index($0, header " ") == 1 { capture = 1; next }
+    capture && /^## [0-9]+\.[0-9]+\.[0-9]+/ { exit }
+    capture { print }
+  ' "$CHANGELOG_FILE" >"$notes_file"
+
+  if [[ ! -s "$notes_file" ]]; then
+    rm -f "$notes_file"
+    printf 'warning: no %s section in %s, skipping the GitHub release\n' "$version" "$CHANGELOG_FILE" >&2
+    return 0
+  fi
+
+  if ! command -v gh >/dev/null 2>&1; then
+    printf 'warning: gh is not installed, so no GitHub release was created\n' >&2
+    printf '  create it with: gh release create %s --title %s --notes-file %s\n' \
+      "$tag_name" "$tag_name" "$notes_file" >&2
+    return 0
+  fi
+
+  if ! gh auth status >/dev/null 2>&1; then
+    printf 'warning: gh is not authenticated, so no GitHub release was created\n' >&2
+    printf '  run `gh auth login`, then: gh release create %s --title %s --notes-file %s\n' \
+      "$tag_name" "$tag_name" "$notes_file" >&2
+    return 0
+  fi
+
+  if gh release create "$tag_name" --title "$tag_name" --notes-file "$notes_file" --verify-tag; then
+    printf 'Created GitHub release %s\n' "$tag_name"
+    rm -f "$notes_file"
+  else
+    printf 'warning: gh release create failed; create it manually with:\n' >&2
+    printf '  gh release create %s --title %s --notes-file %s\n' \
+      "$tag_name" "$tag_name" "$notes_file" >&2
+  fi
+}
+
 main() {
   local run_push=1
   local run_build=1
+  local run_github_release=1
   local version=""
   local bump_kind=""
 
@@ -329,6 +378,10 @@ main() {
         ;;
       --skip-push)
         run_push=0
+        shift
+        ;;
+      --skip-github-release)
+        run_github_release=0
         shift
         ;;
       -h|--help)
@@ -412,6 +465,11 @@ main() {
   if ((run_push)); then
     git push "$REMOTE_NAME" HEAD
     git push "$REMOTE_NAME" "$tag_name"
+
+    # Only after the tag exists on the remote: gh resolves the tag there.
+    if ((run_github_release)); then
+      create_github_release "$tag_name" "$version"
+    fi
   fi
 
   printf '\nReleased %s -> %s (%s)\n' "$old_version" "$version" "$tag_name"

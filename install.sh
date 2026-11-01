@@ -1,0 +1,964 @@
+#!/usr/bin/env bash
+#
+# Interactive installer for jmail.
+#
+# jmail runs as a container, so installing it means collecting the settings,
+# writing a rootless Podman quadlet plus a 0600 environment file into the
+# invoking user's XDG directories, and starting it with `systemctl --user`.
+# Everything this script writes lives under $HOME.
+#
+#   ./install.sh                  interactive; asks whether to reconfigure or update
+#   ./install.sh --reconfigure    change settings, keep data and DKIM keys
+#   ./install.sh --update         pull the image and restart, keep settings
+#   ./install.sh --yes            accept defaults, values come from JMAIL_* env vars
+#   ./install.sh --generate-only  write the files, do not start anything
+#
+# Every prompt is pre-seeded from the same variables the container reads
+# (JMAIL_HOSTNAME, JMAIL_ORIGIN, JMAIL_DOMAINS, ...), so the script can also be
+# driven from a provisioning tool instead of a terminal.
+
+set -euo pipefail
+
+readonly UNIT_NAME="jmail"
+readonly DEFAULT_IMAGE="ghcr.io/ffimnsr/jmail:latest"
+readonly DEFAULT_PUBLISH_PORT="587"
+# Keys install.sh owns. Anything else in the environment file is preserved, so
+# hand-added overrides (JMAIL_TLS_LEVEL, JMAIL_HTTP_ALLOWED_FROM, ...) survive a
+# reconfigure.
+readonly MANAGED_ENV_KEYS="JMAIL_HOSTNAME JMAIL_ORIGIN JMAIL_DOMAINS JMAIL_ROOT_EMAIL JMAIL_SMTP_USER JMAIL_SMTP_PASSWORD JMAIL_MYNETWORKS JMAIL_HTTP_TOKEN JMAIL_IMAGE JMAIL_PUBLISH_PORT JMAIL_HTTP_PUBLISH_BIND JMAIL_HTTP_PUBLISH_PORT"
+
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/jmail"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/jmail"
+UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/containers/systemd"
+ENV_FILE="${CONFIG_DIR}/jmail.env"
+UNIT_FILE="${UNIT_DIR}/jmail.container"
+
+IMAGE="${JMAIL_IMAGE:-}"
+ACTION=""
+ASSUME_YES=0
+GENERATE_ONLY=0
+# Set once the service is up, so the summary can read the generated DKIM keys.
+READ_DKIM=0
+
+usage() {
+  cat <<EOF
+Install, reconfigure or update jmail as a rootless Podman service for the current user.
+
+Usage: install.sh [options]
+
+Options:
+  -y, --yes             Do not prompt; take defaults and JMAIL_* environment values.
+      --reconfigure     Change settings, keeping the data directory and DKIM keys.
+                        Asks whether to pull a newer image before restarting.
+      --update          Pull the image and restart the service, without changing settings.
+      --generate-only   Write the unit and environment file, but do not touch systemd.
+      --image <ref>     Container image. Default: ${DEFAULT_IMAGE}
+  -h, --help            Show this help message.
+
+Without --reconfigure or --update, an existing installation asks which of the two you
+want. A fresh machine is always installed from scratch. With --yes, reconfigure keeps
+the local image; use --update to pull.
+
+Prompts, and the variable each one sets:
+  JMAIL_ORIGIN           Primary sending domain.
+  JMAIL_HOSTNAME         Mail server hostname, announced in the SMTP banner.
+  JMAIL_DOMAINS          Additional sending domains (single vs. multiple is asked).
+  JMAIL_ROOT_EMAIL       Mailbox that receives the built-in test message.
+  JMAIL_SMTP_USER        SASL submission username.
+  JMAIL_SMTP_PASSWORD    SASL submission password. Generated when empty.
+  JMAIL_PUBLISH_PORT     Host port published as container port 587.
+  JMAIL_MYNETWORKS       Networks allowed to relay without authentication.
+  JMAIL_HTTP_TOKEN       Enables the HTTP API. A 33-character token is generated.
+  JMAIL_HTTP_PUBLISH_BIND  Interface for the HTTP API. Default: 127.0.0.1
+  JMAIL_HTTP_PUBLISH_PORT  Host port published as container port 8080.
+  JMAIL_IMAGE              Container image, remembered across runs.
+  JMAIL_ENABLE_LINGER      Set to 1 to enable systemd lingering in --yes mode.
+
+Files written:
+  ${UNIT_FILE}
+  ${ENV_FILE}
+  ${DATA_DIR}/{postfix-ssl,opendkim-keys,spool,postfix.d,init.d,http-state}
+
+Reconfiguring reuses the values in ${ENV_FILE} as defaults, so it is safe to run to
+change one setting. Updating leaves that file and the data directory untouched.
+EOF
+}
+
+die() {
+  printf 'error: %s\n' "$*" >&2
+  exit 1
+}
+
+warn() {
+  printf 'warning: %s\n' "$*" >&2
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+parse_args() {
+  while (($# > 0)); do
+    case "$1" in
+      -y|--yes)
+        ASSUME_YES=1
+        shift
+        ;;
+      --generate-only)
+        GENERATE_ONLY=1
+        shift
+        ;;
+      --reconfigure)
+        [[ -z "$ACTION" || "$ACTION" == "reconfigure" ]] || die "--reconfigure conflicts with --update"
+        ACTION="reconfigure"
+        shift
+        ;;
+      --update)
+        [[ -z "$ACTION" || "$ACTION" == "update" ]] || die "--update conflicts with --reconfigure"
+        ACTION="update"
+        shift
+        ;;
+      --image)
+        [[ $# -ge 2 ]] || die "--image needs a value"
+        IMAGE="$2"
+        shift 2
+        ;;
+      --image=*)
+        IMAGE="${1#*=}"
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "unknown option: $1 (see --help)"
+        ;;
+    esac
+  done
+}
+
+# --- reading existing configuration -----------------------------------------
+
+# Reads a value from the environment file this script writes. Values are stored
+# double quoted, so the surrounding quotes are stripped here.
+env_get() {
+  local key="$1"
+  [[ -f "$ENV_FILE" ]] || return 0
+  awk -F= -v key="$key" '
+    $1 == key {
+      value = $0
+      sub(/^[^=]*=/, "", value)
+      if (value ~ /^".*"$/) {
+        value = substr(value, 2, length(value) - 2)
+      }
+      found = 1
+    }
+    END { if (found) print value }
+  ' "$ENV_FILE"
+}
+
+# Environment first, then the previous install, so an operator can override a
+# single value for one run without editing the file.
+env_value() {
+  local key="$1" value
+  value="${!key-}"
+  if [[ -n "$value" ]]; then
+    printf '%s' "$value"
+    return 0
+  fi
+  env_get "$key"
+}
+
+env_quote() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '"%s"' "$value"
+}
+
+# Rewrites one key in the environment file, keeping every other line as it is.
+set_env_value() {
+  local key="$1" value="$2" tmp
+  tmp="$(mktemp)"
+  awk -F= -v key="$key" -v line="$key=$(env_quote "$value")" '
+    $1 == key {
+      if (!done) { print line; done = 1 }
+      next
+    }
+    { print }
+    END { if (!done) print line }
+  ' "$ENV_FILE" >"$tmp"
+  chmod 0600 "$tmp"
+  mv "$tmp" "$ENV_FILE"
+}
+
+# Everything in the previous environment file that install.sh does not manage:
+# comments and blank lines are dropped, keys it rewrites are dropped, the rest
+# is carried over so custom overrides are not lost on a reconfigure.
+unmanaged_env_lines() {
+  [[ -f "$ENV_FILE" ]] || return 0
+  awk -F= -v managed="$MANAGED_ENV_KEYS" '
+    BEGIN { count = split(managed, keys, " ") }
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*$/ { next }
+    # Only carry over well-formed assignments; anything else would make systemd
+    # reject the environment file.
+    !/^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=/ { next }
+    {
+      key = $1
+      gsub(/^[[:space:]]+/, "", key)
+      gsub(/[[:space:]]+$/, "", key)
+      for (i = 1; i <= count; i++) {
+        if (key == keys[i]) { next }
+      }
+      print
+    }
+  ' "$ENV_FILE"
+}
+
+# The image to use: --image, then JMAIL_IMAGE, then the previous install, then
+# the default. Shared by the install and update paths so they cannot disagree.
+resolve_image() {
+  local stored
+  if [[ -n "$IMAGE" ]]; then
+    printf '%s' "$IMAGE"
+    return 0
+  fi
+  stored="$(env_get JMAIL_IMAGE)"
+  if [[ -n "$stored" ]]; then
+    printf '%s' "$stored"
+    return 0
+  fi
+  printf '%s' "$DEFAULT_IMAGE"
+}
+
+# --- prompts ----------------------------------------------------------------
+
+# Prints the answer on stdout and the prompt on stderr, so callers can capture
+# the value without swallowing the prompt. An empty answer keeps the default.
+ask() {
+  local label="$1" default="${2-}" answer=""
+  if ((ASSUME_YES)); then
+    printf '%s' "$default"
+    return 0
+  fi
+  if [[ -n "$default" ]]; then
+    printf '%s [%s]: ' "$label" "$default" >&2
+  else
+    printf '%s: ' "$label" >&2
+  fi
+  IFS= read -r answer </dev/tty || die "no input available (use --yes for a non-interactive install)"
+  printf '%s' "${answer:-$default}"
+}
+
+ask_required() {
+  local label="$1" default="${2-}" answer
+  while :; do
+    # errexit is cleared inside command substitutions, so propagate the
+    # failure explicitly instead of relying on `set -e` here.
+    answer="$(ask "$label" "$default")" || exit 1
+    if [[ -n "$answer" ]]; then
+      printf '%s' "$answer"
+      return 0
+    fi
+    if ((ASSUME_YES)); then
+      die "$label is required; set the matching JMAIL_* variable or run interactively"
+    fi
+    printf '  a value is required\n' >&2
+  done
+}
+
+ask_yn() {
+  local label="$1" default="${2:-n}" answer
+  if ((ASSUME_YES)); then
+    case "$default" in
+      y|Y|yes|YES) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
+  while :; do
+    answer="$(ask "$label (y/n)" "$default")" || exit 1
+    case "$(printf '%s' "$answer" | tr '[:upper:]' '[:lower:]')" in
+      y|yes) return 0 ;;
+      n|no) return 1 ;;
+      *) printf '  answer y or n\n' >&2 ;;
+    esac
+  done
+}
+
+ask_secret() {
+  local label="$1" default="$2" answer=""
+  if ((ASSUME_YES)); then
+    printf '%s' "$default"
+    return 0
+  fi
+  printf '%s (press Enter to use a generated value): ' "$label" >&2
+  IFS= read -rs answer </dev/tty || die "no input available (use --yes for a non-interactive install)"
+  printf '\n' >&2
+  printf '%s' "${answer:-$default}"
+}
+
+normalize_domain() {
+  local domain
+  domain="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  # Trim the ends only: an internal space is a typo and must fail validation
+  # instead of being silently glued into a different domain.
+  domain="${domain#"${domain%%[![:space:]]*}"}"
+  domain="${domain%"${domain##*[![:space:]]}"}"
+  printf '%s' "$domain"
+}
+
+# Same shape the container accepts for JMAIL_ORIGIN and JMAIL_DOMAINS.
+valid_domain() {
+  [[ "$1" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$ ]]
+}
+
+ask_domain() {
+  local label="$1" default="${2-}" answer
+  while :; do
+    answer="$(ask_required "$label" "$default")" || exit 1
+    answer="$(normalize_domain "$answer")"
+    if valid_domain "$answer"; then
+      printf '%s' "$answer"
+      return 0
+    fi
+    if ((ASSUME_YES)); then
+      die "invalid domain: $answer"
+    fi
+    printf '  %s is not a valid domain name\n' "$answer" >&2
+  done
+}
+
+ask_email() {
+  local label="$1" default="${2-}" answer
+  while :; do
+    answer="$(ask_required "$label" "$default")" || exit 1
+    if [[ "$answer" =~ ^[^@[:space:]]+@[^@[:space:]]+$ ]]; then
+      printf '%s' "$answer"
+      return 0
+    fi
+    if ((ASSUME_YES)); then
+      die "invalid email address: $answer"
+    fi
+    printf '  %s is not a valid email address\n' "$answer" >&2
+  done
+}
+
+ask_port() {
+  local label="$1" default="$2" answer number
+  while :; do
+    answer="$(ask "$label" "$default")" || exit 1
+    if [[ "$answer" =~ ^[0-9]+$ ]]; then
+      number=$((10#$answer))
+      if ((number >= 1 && number <= 65535)); then
+        printf '%s' "$number"
+        return 0
+      fi
+    fi
+    if ((ASSUME_YES)); then
+      die "invalid port: $answer"
+    fi
+    printf '  enter a port between 1 and 65535\n' >&2
+  done
+}
+
+generate_secret() {
+  local bytes="${1:-16}"
+  if need_cmd openssl; then
+    openssl rand -hex "$bytes"
+  elif need_cmd od; then
+    head -c "$bytes" /dev/urandom | od -An -tx1 | tr -d ' \n'
+  else
+    die "openssl or od is required to generate secrets"
+  fi
+}
+
+# A bearer token is pasted into an HTTP header, so keep it to [A-Za-z0-9] and
+# avoid quoting problems in the environment file.
+generate_token() {
+  local length="${1:-33}" token
+  if need_cmd openssl; then
+    token="$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | cut -c "1-${length}")"
+  elif need_cmd base64; then
+    token="$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c "1-${length}")"
+  else
+    die "openssl or base64 is required to generate the HTTP API token"
+  fi
+  if [[ "${#token}" -ne "$length" ]]; then
+    die "could not generate a ${length}-character HTTP API token"
+  fi
+  printf '%s' "$token"
+}
+
+# Pulls an image and reports the version label the release workflow sets. The
+# unit uses Pull=missing, so this is the only thing that fetches images.
+pull_image() {
+  local image="$1" version
+  printf '\nPulling %s...\n' "$image"
+  if ! podman pull "$image"; then
+    return 1
+  fi
+  version="$(podman image inspect --format '{{ index .Labels "org.opencontainers.image.version" }}' "$image" 2>/dev/null || true)"
+  if [[ -n "$version" ]] && [[ "$version" != "<no value>" ]]; then
+    printf 'Image version: %s\n' "$version"
+  fi
+  return 0
+}
+
+# Adds an item to a comma separated list when it is not already there.
+list_add() {
+  local list="$1" item="$2"
+  case ",$list," in
+    *",$item,"*) printf '%s' "$list" ;;
+    *) printf '%s' "${list:+$list,}$item" ;;
+  esac
+}
+
+# --- modes ------------------------------------------------------------------
+
+choose_action() {
+  if [[ -n "$ACTION" ]]; then
+    return 0
+  fi
+  if [[ ! -f "$ENV_FILE" ]]; then
+    ACTION="install"
+    return 0
+  fi
+  if ((ASSUME_YES)) || ((GENERATE_ONLY)); then
+    ACTION="reconfigure"
+    return 0
+  fi
+
+  printf 'Found an existing configuration at %s.\n\n' "$ENV_FILE" >&2
+  printf 'What do you want to do?\n' >&2
+  printf '  1) Reconfigure (change settings, keep data and DKIM keys)\n' >&2
+  printf '  2) Update (pull the image and restart, keep all settings)\n' >&2
+  printf '  3) Cancel\n' >&2
+
+  local answer
+  while :; do
+    answer="$(ask "Choose 1, 2 or 3" "1")" || exit 1
+    case "$answer" in
+      1) ACTION="reconfigure"; return 0 ;;
+      2) ACTION="update"; return 0 ;;
+      3) die "cancelled" ;;
+      *) printf '  enter 1, 2 or 3\n' >&2 ;;
+    esac
+  done
+}
+
+wait_for_service() {
+  local attempt
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if systemctl --user is-active --quiet jmail.service; then
+      return 0
+    fi
+    sleep 1
+  done
+  systemctl --user is-active --quiet jmail.service
+}
+
+restart_or_start() {
+  if systemctl --user is-active --quiet jmail.service; then
+    systemctl --user restart jmail.service
+  else
+    systemctl --user enable --now jmail.service
+  fi
+}
+
+# Pulling before stopping anything means a failed pull leaves the running
+# container and its queue untouched.
+run_update() {
+  [[ -f "$ENV_FILE" ]] || die "no configuration at $ENV_FILE; run ./install.sh to install first"
+  [[ -f "$UNIT_FILE" ]] || die "no service unit at $UNIT_FILE; run ./install.sh to install first"
+
+  local update_image unit_image
+  update_image="$(ask_required "Image to update to" "$(resolve_image)")"
+
+  if ! ask_yn "Pull ${update_image} and restart jmail" y; then
+    die "cancelled"
+  fi
+
+  if ! pull_image "$update_image"; then
+    die "podman pull failed; jmail is still running the current image"
+  fi
+
+  # An explicit --image changes what the unit runs; the rest of the unit stays.
+  unit_image="$(sed -n 's/^Image=//p' "$UNIT_FILE" | sed -n '1p')"
+  if [[ "$update_image" != "$unit_image" ]]; then
+    sed -i "s|^Image=.*|Image=${update_image}|" "$UNIT_FILE"
+    if grep -qxF "Image=${update_image}" "$UNIT_FILE"; then
+      printf 'Unit now uses %s\n' "$update_image"
+    else
+      warn "could not rewrite the Image= line in $UNIT_FILE; set it to $update_image by hand"
+    fi
+  fi
+  if [[ "$update_image" != "$(env_get JMAIL_IMAGE)" ]]; then
+    set_env_value JMAIL_IMAGE "$update_image"
+  fi
+
+  systemctl --user daemon-reload || die "systemctl --user daemon-reload failed"
+  if ! restart_or_start; then
+    printf '\nCould not restart jmail.service. Check what happened with:\n  systemctl --user status jmail\n  journalctl --user -u jmail -n 50 --no-pager\n' >&2
+    exit 1
+  fi
+
+  if wait_for_service; then
+    printf 'jmail.service is running.\n'
+  else
+    warn "jmail.service is not active yet; check: systemctl --user status jmail"
+  fi
+
+  printf '\nUpdated jmail\n'
+  printf '  image : %s\n' "$update_image"
+  printf '  unit  : %s\n' "$UNIT_FILE"
+  printf '  data  : %s (untouched)\n\n' "$DATA_DIR"
+  printf 'Logs: journalctl --user -u jmail -f\n'
+}
+
+# --- main -------------------------------------------------------------------
+
+main() {
+  parse_args "$@"
+
+  # The quadlet and environment file are written under $HOME and started with
+  # the user manager, which root does not have in the same way. A system-scope
+  # service is scripts/quadlet.sh --scope system.
+  if ((EUID == 0)); then
+    die "run install.sh as the user who should own the service, not as root (for a system service use scripts/quadlet.sh --scope system)"
+  fi
+
+  if ((!ASSUME_YES)) && [[ ! -r /dev/tty ]]; then
+    die "no terminal available for the prompts; run with --yes and JMAIL_* variables set"
+  fi
+
+  if ((!GENERATE_ONLY)); then
+    need_cmd podman || die "podman is required; install Podman 4.4 or newer first"
+    need_cmd systemctl || die "systemd is required to run the generated user service"
+  fi
+
+  choose_action
+
+  if [[ "$ACTION" == "update" ]] && ((GENERATE_ONLY)); then
+    die "--update cannot be combined with --generate-only"
+  fi
+
+  if [[ "$ACTION" == "update" ]]; then
+    run_update
+    return 0
+  fi
+
+  printf '\n=== jmail installer ===\n\n' >&2
+  if [[ "$ACTION" == "reconfigure" ]] && [[ -f "$ENV_FILE" ]]; then
+    printf 'Reconfiguring the installation at %s; its values are the defaults below.\n\n' "$ENV_FILE" >&2
+  fi
+
+  local origin hostname hostname_default root_email root_email_default
+  local smtp_user smtp_user_default smtp_password existing_password generated_password
+  local publish_port port_default mynetworks networks_default
+  local existing_domains_raw existing_extras seed mode_default choice more
+  local http_enabled=0 http_token="" http_bind="127.0.0.1" http_port="8080"
+  local http_default="n" extra_domains=""
+
+  origin="$(ask_domain "Primary sending domain (JMAIL_ORIGIN)" "$(env_value JMAIL_ORIGIN)")"
+
+  hostname_default="$(env_value JMAIL_HOSTNAME)"
+  if [[ -z "$hostname_default" ]]; then
+    hostname_default="mail.$origin"
+  fi
+  hostname="$(ask_domain "Mail server hostname (JMAIL_HOSTNAME)" "$hostname_default")"
+
+  # Previous additional domains, minus the origin, which is always signed.
+  existing_domains_raw="$(env_value JMAIL_DOMAINS)"
+  existing_extras=""
+  for seed in ${existing_domains_raw//,/ }; do
+    seed="$(normalize_domain "$seed")"
+    if [[ -n "$seed" ]] && [[ "$seed" != "$origin" ]]; then
+      existing_extras="$(list_add "$existing_extras" "$seed")"
+    fi
+  done
+
+  mode_default="1"
+  if [[ -n "$existing_extras" ]]; then
+    mode_default="2"
+  fi
+
+  if ((ASSUME_YES)); then
+    choice="$mode_default"
+  else
+    printf '\nWill jmail send mail from a single domain or from several domains?\n' >&2
+    printf '  1) single domain   (%s only)\n' "$origin" >&2
+    printf '  2) multiple domains (each one gets its own DKIM key)\n' >&2
+    while :; do
+      choice="$(ask "Choose 1 or 2" "$mode_default")"
+      case "$choice" in
+        1|2) break ;;
+        *) printf '  enter 1 or 2\n' >&2 ;;
+      esac
+    done
+  fi
+
+  if [[ "$choice" == "2" ]]; then
+    if [[ -n "$existing_extras" ]]; then
+      if ask_yn "Keep the existing additional domains (${existing_extras//,/ })" y; then
+        extra_domains="$existing_extras"
+      fi
+    fi
+    if ((!ASSUME_YES)); then
+      printf 'Enter each additional sending domain. Leave it blank when you are done.\n' >&2
+      while :; do
+        more="$(ask "Additional domain (blank to finish)" "")"
+        if [[ -z "$more" ]]; then
+          break
+        fi
+        more="$(normalize_domain "$more")"
+        if ! valid_domain "$more"; then
+          printf '  %s is not a valid domain name\n' "$more" >&2
+          continue
+        fi
+        if [[ "$more" == "$origin" ]]; then
+          printf '  %s is the primary domain and is always signed\n' "$more" >&2
+          continue
+        fi
+        extra_domains="$(list_add "$extra_domains" "$more")"
+      done
+    fi
+  fi
+
+  root_email_default="$(env_value JMAIL_ROOT_EMAIL)"
+  if [[ -z "$root_email_default" ]]; then
+    root_email_default="postmaster@$origin"
+  fi
+  root_email="$(ask_email "Mailbox for test messages (JMAIL_ROOT_EMAIL)" "$root_email_default")"
+
+  smtp_user_default="$(env_value JMAIL_SMTP_USER)"
+  if [[ -z "$smtp_user_default" ]]; then
+    smtp_user_default="jmail"
+  fi
+  smtp_user="$(ask_required "SMTP username (JMAIL_SMTP_USER)" "$smtp_user_default")"
+
+  existing_password="$(env_get JMAIL_SMTP_PASSWORD)"
+  smtp_password="$(env_value JMAIL_SMTP_PASSWORD)"
+  if [[ -z "$smtp_password" ]]; then
+    generated_password="$(generate_secret 16)"
+    smtp_password="$(ask_secret "SMTP password for $smtp_user" "$generated_password")"
+  elif [[ -n "$existing_password" ]] && [[ -z "${JMAIL_SMTP_PASSWORD-}" ]]; then
+    printf 'Reusing the SMTP password from %s.\n' "$ENV_FILE" >&2
+  fi
+
+  port_default="$(env_value JMAIL_PUBLISH_PORT)"
+  if [[ -z "$port_default" ]]; then
+    port_default="$DEFAULT_PUBLISH_PORT"
+  fi
+  publish_port="$(ask_port "Host port for SMTP submission (JMAIL_PUBLISH_PORT)" "$port_default")"
+
+  networks_default="$(env_value JMAIL_MYNETWORKS)"
+  if [[ -z "$networks_default" ]]; then
+    networks_default="127.0.0.0/8"
+  fi
+  mynetworks="$(ask_required "Networks that may relay without authentication (JMAIL_MYNETWORKS)" "$networks_default")"
+
+  if [[ -n "$(env_value JMAIL_HTTP_TOKEN)" ]]; then
+    http_default="y"
+  fi
+  if ask_yn "Enable the jmail-http API (JMAIL_HTTP_TOKEN)" "$http_default"; then
+    http_enabled=1
+    http_token="$(env_value JMAIL_HTTP_TOKEN)"
+    if [[ -z "$http_token" ]]; then
+      http_token="$(generate_token 33)"
+    fi
+
+    http_bind="$(env_value JMAIL_HTTP_PUBLISH_BIND)"
+    if [[ -z "$http_bind" ]]; then
+      http_bind="127.0.0.1"
+    fi
+    http_bind="$(ask_required "Host interface for the HTTP API (JMAIL_HTTP_PUBLISH_BIND)" "$http_bind")"
+    # PublishPort wants [addr] for IPv6. Accept a bare address and normalise it
+    # once, so the value read back on the next run is already bracketed.
+    if [[ "$http_bind" == *:* ]] && [[ "$http_bind" != \[*\] ]]; then
+      http_bind="[$http_bind]"
+    fi
+
+    http_port="$(env_value JMAIL_HTTP_PUBLISH_PORT)"
+    if [[ -z "$http_port" ]]; then
+      http_port="8080"
+    fi
+    http_port="$(ask_port "Host port for the HTTP API (JMAIL_HTTP_PUBLISH_PORT)" "$http_port")"
+  fi
+
+  local image_default
+  image_default="$(resolve_image)"
+  IMAGE="$(ask_required "Container image" "$image_default")"
+
+  # The unit uses Pull=missing, so this decides whether a newer image is fetched
+  # before the service restarts.
+  local do_pull=0
+  if ((!GENERATE_ONLY)); then
+    if [[ "$ACTION" == "install" ]]; then
+      do_pull=1
+    else
+      local pull_default="y"
+      if ((ASSUME_YES)); then
+        # --yes must not surprise automation with a registry call; --update is
+        # the explicit way to pull.
+        pull_default="n"
+      fi
+      if ask_yn "Pull ${IMAGE} before restarting, in case a newer image is published" "$pull_default"; then
+        do_pull=1
+      fi
+    fi
+  fi
+
+  printf '\nSummary\n' >&2
+  printf '  image      : %s\n' "$IMAGE" >&2
+  printf '  hostname   : %s\n' "$hostname" >&2
+  printf '  origin     : %s\n' "$origin" >&2
+  if [[ -n "$extra_domains" ]]; then
+    printf '  domains    : %s\n' "${extra_domains//,/ }" >&2
+  fi
+  printf '  root email : %s\n' "$root_email" >&2
+  printf '  SMTP user  : %s\n' "$smtp_user" >&2
+  printf '  SMTP port  : %s\n' "$publish_port" >&2
+  if ((do_pull)); then
+    if [[ "$ACTION" == "install" ]]; then
+      printf '  image pull : before start\n' >&2
+    else
+      printf '  image pull : before restart\n' >&2
+    fi
+  fi
+  if ((http_enabled)); then
+    printf '  HTTP API   : %s:%s\n' "$http_bind" "$http_port" >&2
+  else
+    printf '  HTTP API   : disabled\n' >&2
+  fi
+  printf '  data dir   : %s\n\n' "$DATA_DIR" >&2
+
+  local confirm_label="Write the files and start jmail"
+  if ((GENERATE_ONLY)); then
+    confirm_label="Write the files"
+  elif [[ "$ACTION" == "reconfigure" ]]; then
+    confirm_label="Write the files and restart jmail"
+  fi
+  if ! ask_yn "$confirm_label" y; then
+    die "cancelled"
+  fi
+
+  # Pull before writing anything, so a failed pull leaves the previous install
+  # exactly as it was. A fresh install may be running offline against an image
+  # that is already in the local store, so that case falls back instead.
+  if ((do_pull)); then
+    if ! pull_image "$IMAGE"; then
+      if [[ "$ACTION" == "install" ]] && podman image exists "$IMAGE" >/dev/null 2>&1; then
+        warn "could not pull $IMAGE; continuing with the local copy"
+      else
+        die "podman pull failed; nothing was changed"
+      fi
+    fi
+  fi
+
+  mkdir -p "$CONFIG_DIR" "$UNIT_DIR" \
+    "$DATA_DIR/postfix-ssl" "$DATA_DIR/opendkim-keys" "$DATA_DIR/spool" \
+    "$DATA_DIR/postfix.d" "$DATA_DIR/init.d" "$DATA_DIR/http-state"
+
+  # Captured before the file is rewritten below.
+  local preserved_env=""
+  preserved_env="$(unmanaged_env_lines)"
+
+  (
+    umask 077
+    {
+      printf '# Generated by jmail install.sh on %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      printf 'JMAIL_HOSTNAME=%s\n' "$(env_quote "$hostname")"
+      printf 'JMAIL_ORIGIN=%s\n' "$(env_quote "$origin")"
+      if [[ -n "$extra_domains" ]]; then
+        printf 'JMAIL_DOMAINS=%s\n' "$(env_quote "$extra_domains")"
+      fi
+      printf 'JMAIL_ROOT_EMAIL=%s\n' "$(env_quote "$root_email")"
+      printf 'JMAIL_SMTP_USER=%s\n' "$(env_quote "$smtp_user")"
+      printf 'JMAIL_SMTP_PASSWORD=%s\n' "$(env_quote "$smtp_password")"
+      printf 'JMAIL_MYNETWORKS=%s\n' "$(env_quote "$mynetworks")"
+      if ((http_enabled)); then
+        printf 'JMAIL_HTTP_TOKEN=%s\n' "$(env_quote "$http_token")"
+      fi
+      # Installer state, read back by the next run. The container ignores these.
+      printf 'JMAIL_IMAGE=%s\n' "$(env_quote "$IMAGE")"
+      printf 'JMAIL_PUBLISH_PORT=%s\n' "$(env_quote "$publish_port")"
+      if ((http_enabled)); then
+        printf 'JMAIL_HTTP_PUBLISH_BIND=%s\n' "$(env_quote "$http_bind")"
+        printf 'JMAIL_HTTP_PUBLISH_PORT=%s\n' "$(env_quote "$http_port")"
+      fi
+      if [[ -n "$preserved_env" ]]; then
+        printf '# Preserved from the previous install; install.sh does not manage these.\n'
+        printf '%s\n' "$preserved_env"
+      fi
+    } >"$ENV_FILE"
+  )
+  chmod 0600 "$ENV_FILE"
+
+  local http_publish_line="" health_cmd="nc -z 127.0.0.1 587"
+  if ((http_enabled)); then
+    http_publish_line="PublishPort=${http_bind}:${http_port}:8080"
+    health_cmd="nc -z 127.0.0.1 587 && nc -z 127.0.0.1 8080"
+  fi
+
+  cat >"$UNIT_FILE" <<EOF
+[Unit]
+Description=jmail outbound SMTP sender
+Wants=network-online.target
+After=network-online.target
+
+[Container]
+ContainerName=${UNIT_NAME}
+Image=${IMAGE}
+# install.sh pulls explicitly (on install, on --update, and when reconfigure is
+# asked to), so a plain restart uses the local image instead of silently
+# upgrading it.
+Pull=missing
+HostName=${hostname}
+EnvironmentFile=${ENV_FILE}
+Volume=${DATA_DIR}/postfix-ssl:/etc/postfix/ssl:Z
+Volume=${DATA_DIR}/opendkim-keys:/etc/opendkim/keys:Z
+Volume=${DATA_DIR}/spool:/var/spool/postfix:Z
+Volume=${DATA_DIR}/postfix.d:/etc/jmail/postfix.d:Z
+Volume=${DATA_DIR}/init.d:/etc/jmail/init.d:Z
+Volume=${DATA_DIR}/http-state:/var/lib/jmail-http:Z
+PublishPort=${publish_port}:587
+${http_publish_line}
+# Podman does not carry the image HEALTHCHECK into the container, so it is
+# declared here. 127.0.0.1 is explicit because Postfix runs ipv4-only.
+HealthCmd=${health_cmd}
+HealthInterval=30s
+HealthRetries=3
+HealthStartPeriod=30s
+HealthTimeout=5s
+
+[Service]
+Restart=always
+# Pull=missing only pulls when the image is absent, so this covers that first
+# pull on a cold cache.
+TimeoutStartSec=300
+
+[Install]
+WantedBy=default.target
+EOF
+  chmod 0644 "$UNIT_FILE"
+
+  printf '\nWrote %s\nWrote %s\n' "$ENV_FILE" "$UNIT_FILE"
+
+  if ((GENERATE_ONLY)); then
+    printf '\nStart it with:\n  systemctl --user daemon-reload\n  systemctl --user enable --now jmail.service\n'
+    printf 'If it is already running, use `systemctl --user restart jmail.service` instead.\n'
+    print_summary "$origin" "$extra_domains" "$hostname" "$publish_port" \
+      "$smtp_user" "$smtp_password" "$http_enabled" "$http_bind" "$http_port" "$http_token"
+    exit 0
+  fi
+
+  printf '\nApplying the configuration...\n'
+  systemctl --user daemon-reload || die "systemctl --user daemon-reload failed"
+  # A running unit keeps the environment it started with, so reconfiguring has
+  # to restart it; enable --now would be a no-op on an active service.
+  if ! restart_or_start; then
+    printf '\nCould not start jmail.service. Check what happened with:\n  systemctl --user status jmail\n  journalctl --user -u jmail -n 50 --no-pager\n' >&2
+    printf 'If the failure is about the port, re-run the installer with a higher JMAIL_PUBLISH_PORT (for example 10587).\n' >&2
+    exit 1
+  fi
+
+  if need_cmd loginctl && need_cmd sudo; then
+    local linger linger_default="y"
+    if ((ASSUME_YES)); then
+      # Do not run sudo behind an operator's back: --yes only enables lingering
+      # when JMAIL_ENABLE_LINGER=1 asks for it.
+      linger_default="n"
+    fi
+    if [[ "${JMAIL_ENABLE_LINGER:-0}" == "1" ]]; then
+      linger_default="y"
+    fi
+    linger="$(loginctl show-user "$(id -un)" -p Linger 2>/dev/null || true)"
+    if [[ "$linger" != "Linger=yes" ]]; then
+      if ask_yn "Enable lingering so jmail keeps running after you log out (runs sudo)" "$linger_default"; then
+        if ! sudo loginctl enable-linger "$(id -un)"; then
+          warn "could not enable lingering; jmail stops when your session ends"
+        fi
+      fi
+    fi
+  fi
+
+  if wait_for_service; then
+    printf 'jmail.service is running.\n'
+    # Keys exist after the container's init step, so the summary can print them.
+    READ_DKIM=1
+  else
+    warn "jmail.service is not active yet; check: systemctl --user status jmail"
+  fi
+
+  print_summary "$origin" "$extra_domains" "$hostname" "$publish_port" \
+    "$smtp_user" "$smtp_password" "$http_enabled" "$http_bind" "$http_port" "$http_token"
+}
+
+print_summary() {
+  local origin="$1" extra_domains="$2" hostname="$3" publish_port="$4"
+  local smtp_user="$5" smtp_password="$6" http_enabled="$7" http_bind="$8"
+  local http_port="$9" http_token="${10}" domain dkim_record
+
+  printf '\n=== jmail configuration ===\n\n'
+  printf 'Environment file : %s\n' "$ENV_FILE"
+  printf 'Service unit     : %s\n' "$UNIT_FILE"
+  printf 'Data directory   : %s\n\n' "$DATA_DIR"
+
+  printf 'SMTP submission\n'
+  printf '  host     : %s (or 127.0.0.1 from this machine)\n' "$hostname"
+  printf '  port     : %s\n' "$publish_port"
+  printf '  username : %s\n' "$smtp_user"
+  printf '  password : %s\n' "$smtp_password"
+  printf '  STARTTLS is required before AUTH\n\n'
+
+  if ((http_enabled)); then
+    printf 'HTTP API (jmail-http)\n'
+    printf '  endpoint : http://%s:%s/v1/send\n' "$http_bind" "$http_port"
+    printf '  token    : %s\n' "$http_token"
+    if [[ "$http_bind" == "127.0.0.1" ]] || [[ "$http_bind" == "[::1]" ]]; then
+      printf '  It is bound to loopback; put TLS in front of it before exposing it.\n'
+    fi
+    printf '\n'
+  fi
+
+  printf 'DNS records to publish\n'
+  printf '======================\n\n'
+  for domain in "$origin" ${extra_domains//,/ }; do
+    printf '%s\n' "$domain"
+    printf '  DKIM   sendonly._domainkey.%s  TXT\n' "$domain"
+    if ((READ_DKIM)) && dkim_record="$(read_dkim_record "$domain")"; then
+      printf '%s\n' "$dkim_record" | sed 's/^/         /'
+    else
+      printf '         Generated on the first start. Read it with:\n'
+      printf '           podman exec %s cat /etc/opendkim/keys/%s/sendonly.txt\n' "$UNIT_NAME" "$domain"
+    fi
+    printf '  SPF    %s  TXT  "v=spf1 a:%s -all"\n' "$domain" "$hostname"
+    printf '  DMARC  _dmarc.%s  TXT  "v=DMARC1; p=none; rua=mailto:dmarc@%s"\n\n' "$domain" "$domain"
+  done
+  printf 'No MX record is needed: jmail is outbound-only.\n'
+  printf 'SPF uses the A record of %s; add ip4:<server-ip> if that is not the sending address.\n' "$hostname"
+  printf 'Also point the PTR record of this server at %s.\n' "$hostname"
+  printf 'Tighten DMARC to p=reject once the reports look clean.\n\n'
+
+  printf 'Logs: journalctl --user -u jmail -f   (or: podman logs -f %s)\n' "$UNIT_NAME"
+  printf 'Status: systemctl --user status jmail\n'
+}
+
+# The key is generated inside the container during its first start, so this is
+# only useful once the service is up; the caller sets READ_DKIM to say so.
+read_dkim_record() {
+  local domain="$1" attempt record
+  for attempt in 1 2 3 4 5; do
+    record="$(podman exec "$UNIT_NAME" cat "/etc/opendkim/keys/$domain/sendonly.txt" 2>/dev/null || true)"
+    if [[ -n "$record" ]]; then
+      printf '%s' "$record"
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+main "$@"

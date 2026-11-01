@@ -159,7 +159,9 @@ After=network-online.target
 [Container]
 ContainerName=jmail
 Image=${image}
-Pull=always
+# newer: pull only when the registry has a newer image than the local one, so a
+# restart picks up a new :latest without re-pulling an unchanged image.
+Pull=newer
 HostName=${hostname}
 EnvironmentFile=${ENV_FILE}
 Volume=${DATA_ROOT}/postfix-ssl:/etc/postfix/ssl:Z
@@ -180,7 +182,7 @@ HealthTimeout=5s
 
 [Service]
 Restart=always
-# Pull=always means the start waits for a registry pull before the first boot.
+# Pull=newer still fetches on the first boot, when no local image exists yet.
 TimeoutStartSec=300
 
 [Install]
