@@ -20,7 +20,8 @@ tasks:
     commands:
       - |
         mkdir -p "$JMAIL_STATE_DIR/postfix-ssl" "$JMAIL_STATE_DIR/opendkim-keys" \
-          "$JMAIL_STATE_DIR/spool" "$JMAIL_STATE_DIR/postfix.d" "$JMAIL_STATE_DIR/init.d"
+          "$JMAIL_STATE_DIR/spool" "$JMAIL_STATE_DIR/postfix.d" "$JMAIL_STATE_DIR/init.d" \
+          "$JMAIL_STATE_DIR/http-state"
         set -a
         . ./.env.test
         set +a
@@ -35,6 +36,7 @@ tasks:
           -v "$PWD/$JMAIL_STATE_DIR/spool:/var/spool/postfix:Z" \
           -v "$PWD/$JMAIL_STATE_DIR/postfix.d:/etc/jmail/postfix.d:Z" \
           -v "$PWD/$JMAIL_STATE_DIR/init.d:/etc/jmail/init.d:Z" \
+          -v "$PWD/$JMAIL_STATE_DIR/http-state:/var/lib/jmail-http:Z" \
           "$JMAIL_IMAGE"
 
   dev:

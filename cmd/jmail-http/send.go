@@ -100,9 +100,14 @@ func (s *server) handleSend(w http.ResponseWriter, r *http.Request) {
 
 	entry, owner := s.idem.begin(idempotencyKey, s.now())
 	if !owner {
-		if cached := entry.wait(); cached != nil {
+		cached := entry.wait(r.Context())
+		if cached != nil {
 			slog.Info("idempotent replay", "id", id, "idempotency_key", idempotencyKey)
 			writeCached(w, *cached)
+			return
+		}
+		if r.Context().Err() != nil {
+			writeError(w, id, http.StatusServiceUnavailable, "submission_canceled", "the request was canceled")
 			return
 		}
 		// The original attempt failed and released the key; the client has to
@@ -112,9 +117,17 @@ func (s *server) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Release the key on every exit path that does not publish a response. A
+	// panic would otherwise leave a waiter blocked until the process restarts.
+	settled := false
+	defer func() {
+		if !settled {
+			s.idem.abort(entry)
+		}
+	}()
+
 	queueID, err := s.submitter.submit(r.Context(), envelope.from.Address, envelope.recipients(), message)
 	if err != nil {
-		s.idem.abort(entry)
 		s.logSubmitFailure(id, err)
 		writeSubmitFailure(w, id, r.Context(), err)
 		return
@@ -129,6 +142,7 @@ func (s *server) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.idem.finish(entry, cachedResponse{status: http.StatusAccepted, body: payload})
+	settled = true
 
 	slog.Info("queued",
 		"id", id,

@@ -97,15 +97,23 @@ COPY --from=http-build /out/jmail-http /usr/local/bin/jmail-http
 # touching the templates.
 RUN mkdir -p /etc/jmail/init.d /etc/jmail/postfix.d
 
-VOLUME ["/var/spool/postfix", "/etc/postfix", "/etc/opendkim/keys"]
+# The HTTP API's idempotency records. Created here with the service's own
+# permissions so the directory is usable whether it is a volume, a bind mount or
+# the container's writable layer.
+RUN install -d -m 0700 /var/lib/jmail-http
+
+VOLUME ["/var/spool/postfix", "/etc/postfix", "/etc/opendkim/keys", "/var/lib/jmail-http"]
 
 ENTRYPOINT ["/init"]
 
-# `postfix status` proves the master is alive; the port check proves clients can
+# `postfix status` proves the master is alive; the port checks prove clients can
 # connect. Note the explicit IPv4 address: "/etc/postfix/main.cf" sets
-# inet_protocols = ipv4, so "localhost" may resolve to ::1 and fail.
+# inet_protocols = ipv4, so "localhost" may resolve to ::1 and fail. The HTTP API
+# port is only checked when JMAIL_HTTP_TOKEN enables it, because the service parks
+# itself otherwise and the port stays closed.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-  CMD postfix status >/dev/null 2>&1 && nc -z 127.0.0.1 587
+  CMD postfix status >/dev/null 2>&1 && nc -z 127.0.0.1 587 && \
+  { [ -z "${JMAIL_HTTP_TOKEN}" ] || nc -z 127.0.0.1 8080; }
 
 STOPSIGNAL SIGINT
 EXPOSE 25 587 8080

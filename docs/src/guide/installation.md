@@ -25,7 +25,7 @@ Images are published to `ghcr.io/ffimnsr/jmail` for `linux/amd64` and `linux/arm
 ## Run the container
 
 ```sh
-mkdir -p ./jmail/{postfix-ssl,opendkim-keys,spool}
+mkdir -p ./jmail/{postfix-ssl,opendkim-keys,spool,http-state}
 podman run -d --name jmail \
   --restart unless-stopped \
   -h mail.example.com \
@@ -38,6 +38,7 @@ podman run -d --name jmail \
   -v ./jmail/postfix-ssl:/etc/postfix/ssl:z \
   -v ./jmail/opendkim-keys:/etc/opendkim/keys:z \
   -v ./jmail/spool:/var/spool/postfix:z \
+  -v ./jmail/http-state:/var/lib/jmail-http:z \
   ghcr.io/ffimnsr/jmail:latest
 ```
 
@@ -56,6 +57,7 @@ If port `587` is already in use, or you run rootless, publish a higher host port
 | `/etc/postfix/ssl` | The TLS certificate and key. Persist this, otherwise every new container gets a new self-signed certificate. |
 | `/etc/opendkim/keys` | DKIM private keys, one directory per domain. |
 | `/var/spool/postfix` | Postfix queue. Persisting it keeps mail that is still being retried across restarts. |
+| `/var/lib/jmail-http` | HTTP API idempotency records, so a retry still replays after a restart or container recreation. Only written when the API is enabled. |
 | `/etc/jmail/postfix.d`, `/etc/jmail/init.d` | Optional overrides and hooks; see [Customization](../advanced/customization.md). |
 
 `/etc/postfix` as a whole is also a volume in the image, so mounting it instead of `/etc/postfix/ssl` works too.

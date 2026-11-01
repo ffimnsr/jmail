@@ -35,7 +35,10 @@ The HTTP submission API is off unless `JMAIL_HTTP_TOKEN` is set. See
 | `JMAIL_HTTP_RATE` | `10` | Accepted requests per second, as a token bucket. |
 | `JMAIL_HTTP_RATE_BURST` | `20` | Bucket size, so short spikes up to this size pass. |
 | `JMAIL_HTTP_TIMEOUT` | `30s` | Overall deadline for one SMTP submission. |
+| `JMAIL_HTTP_DRAIN` | `2s` | How long a `SIGTERM` waits for in-flight submissions before exiting. Must stay below `S6_KILL_GRACETIME`. |
 | `JMAIL_HTTP_IDEMPOTENCY_TTL` | `1h` | How long an `Idempotency-Key` replay is remembered. |
+| `JMAIL_HTTP_IDEMPOTENCY_DIR` | `/var/lib/jmail-http` | Where replay records are written so they survive a restart. `off` keeps them in memory only. |
+| `JMAIL_HTTP_LOG_RATE` | `10` | Access-log lines per second, sampled with a token bucket. `0` logs every request. |
 
 ## Volumes
 
@@ -44,6 +47,7 @@ The HTTP submission API is off unless `JMAIL_HTTP_TOKEN` is set. See
 | `/etc/postfix` | Rendered Postfix configuration, `aliases`, `canonical`, `generic` databases and `ssl/server.{crt,key}`. |
 | `/etc/opendkim/keys` | DKIM private keys at `/etc/opendkim/keys/$JMAIL_ORIGIN/sendonly.private`. |
 | `/var/spool/postfix` | Postfix queue. |
+| `/var/lib/jmail-http` | HTTP API idempotency records, so a client retry still replays after a restart. Only written when the API is enabled. |
 
 Two more directories are meant to be mounted but are not volumes, so they stay empty unless you fill them:
 
@@ -51,6 +55,15 @@ Two more directories are meant to be mounted but are not volumes, so they stay e
 | --- | --- |
 | `/etc/jmail/postfix.d` | `*.conf` files of `parameter = value` lines applied with `postconf -e` on every start. |
 | `/etc/jmail/init.d` | Executable `*.sh` hooks run after configuration, before services start. |
+
+`/var/lib/jmail-http` is declared with `VOLUME`, so removing the container without `-v` leaves the records in an
+anonymous volume instead of deleting them. That keeps them from being lost by accident, but an anonymous volume is
+hard to find again, so prefer a named volume or a bind mount when the records matter:
+
+```sh
+-v jmail-http-state:/var/lib/jmail-http     # named volume
+-v ./jmail/http-state:/var/lib/jmail-http:z # bind mount, SELinux relabelled
+```
 
 See [Customization](../advanced/customization.md).
 
@@ -92,6 +105,17 @@ scripts live under `/etc/s6-overlay/s6-rc.d`:
 | `svc-postfix` | Postfix in the foreground. |
 | `svc-jmail-http` | HTTP submission API. Parks itself when `JMAIL_HTTP_TOKEN` is unset, because a static s6 bundle cannot be conditional. |
 
+s6 restarts a service whenever it exits, which is what recovers `svc-jmail-http` from a
+crash. Two details make that survivable:
+
+- A `finish` script sleeps one second after a failed exit, so a binary that fails
+  immediately (bad configuration, port already bound) restarts about once a second instead
+  of spinning.
+- `s6-overlay` sends `SIGTERM`, waits `S6_KILL_GRACETIME` (3000 ms by default, a fixed
+  delay rather than a ceiling), then sends `SIGKILL`. `JMAIL_HTTP_DRAIN` therefore defaults
+  to `2s` so the graceful path finishes inside it. Raising one without the other only
+  lengthens every `podman stop` or `docker stop`.
+
 Services are listed in `/etc/s6-overlay/user-bundles.d/user/contents.d`, which is the s6-overlay 3.2.3+ bundle
 location.
 
@@ -101,10 +125,13 @@ The image declares its own `HEALTHCHECK`, so Docker, Compose and Kubernetes can 
 extra configuration:
 
 ```
-postfix status >/dev/null 2>&1 && nc -z 127.0.0.1 587
+postfix status >/dev/null 2>&1 && nc -z 127.0.0.1 587 && \
+  { [ -z "${JMAIL_HTTP_TOKEN}" ] || nc -z 127.0.0.1 8080; }
 ```
 
-It runs every 30 seconds after a 30-second start period. `127.0.0.1` is spelled out on purpose: Postfix runs with
+It runs every 30 seconds after a 30-second start period. The HTTP port is only checked
+when `JMAIL_HTTP_TOKEN` is set, because the API parks itself otherwise and the port stays
+closed. `127.0.0.1` is spelled out on purpose: Postfix runs with
 `inet_protocols = ipv4`, so `localhost` can resolve to `::1` and the check would always fail.
 
 Podman does not copy an image's health check into the container it creates, so with podman you have to declare the

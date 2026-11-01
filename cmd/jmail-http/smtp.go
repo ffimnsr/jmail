@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -83,6 +84,12 @@ func newSubmitter(addr, helo string, timeout time.Duration, concurrency int) *su
 }
 
 func (s *submitter) submit(ctx context.Context, from string, recipients []string, message []byte) (string, error) {
+	// The timeout covers the whole operation, including waiting for a free slot.
+	// Without this a burst larger than the concurrency limit would leave requests
+	// queued here for as long as the backlog lasts.
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+
 	select {
 	case s.sem <- struct{}{}:
 		defer func() { <-s.sem }()
@@ -229,25 +236,30 @@ func writeCommand(writer *bufio.Writer, format string, args ...any) error {
 }
 
 // writeMessage dot-stuffs and terminates the DATA block. The message is already
-// CRLF-terminated by the MIME builder.
-func writeMessage(writer *bufio.Writer, message []byte) error {
-	atLineStart := true
-	for _, b := range message {
-		if atLineStart && b == '.' {
-			if err := writer.WriteByte('.'); err != nil {
+// CRLF-terminated by the MIME builder. Lines are copied in spans rather than
+// byte by byte, because a maximum-size message is several megabytes.
+func writeMessage(w *bufio.Writer, message []byte) error {
+	for start := 0; start < len(message); {
+		line := message[start:]
+		if end := bytes.IndexByte(line, '\n'); end >= 0 {
+			line = line[:end+1]
+		}
+		if line[0] == '.' {
+			if err := w.WriteByte('.'); err != nil {
 				return err
 			}
 		}
-		if err := writer.WriteByte(b); err != nil {
+		if _, err := w.Write(line); err != nil {
 			return err
 		}
-		atLineStart = b == '\n'
+		start += len(line)
 	}
-	if !atLineStart {
-		if _, err := writer.WriteString("\r\n"); err != nil {
+
+	if len(message) > 0 && message[len(message)-1] != '\n' {
+		if _, err := w.WriteString("\r\n"); err != nil {
 			return err
 		}
 	}
-	_, err := writer.WriteString(".\r\n")
+	_, err := w.WriteString(".\r\n")
 	return err
 }

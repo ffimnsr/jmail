@@ -164,6 +164,7 @@ Volume=${DATA_ROOT}/opendkim-keys:/etc/opendkim/keys:Z
 Volume=${DATA_ROOT}/spool:/var/spool/postfix:Z
 Volume=${DATA_ROOT}/postfix.d:/etc/jmail/postfix.d:Z
 Volume=${DATA_ROOT}/init.d:/etc/jmail/init.d:Z
+Volume=${DATA_ROOT}/http-state:/var/lib/jmail-http:Z
 PublishPort=${publish_port}:587
 ${http_container_lines}
 # Podman does not carry the image HEALTHCHECK into the container, so it is

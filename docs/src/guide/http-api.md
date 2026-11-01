@@ -145,7 +145,14 @@ within `JMAIL_HTTP_IDEMPOTENCY_TTL` (one hour by default) replays the original
 response and sends nothing; the replay carries `Idempotent-Replay: true`. An
 attempt that fails does not reserve the key, so the client can retry.
 
-Keys are held in memory, so they do not survive a restart.
+Records are written to `JMAIL_HTTP_IDEMPOTENCY_DIR` before the response is sent, so
+they survive a restart of the process or the container. That directory is a declared
+volume: `podman rm` without `-v` leaves the records behind in an anonymous volume
+rather than deleting them, and a named volume or bind mount lets you attach them to a
+new container. They are not atomic with the SMTP submission itself: a crash between
+handing the message to Postfix and recording the reply can still produce a duplicate
+on retry. Set the variable to `off` to keep records in memory only, which is what a
+read-only root filesystem effectively does anyway.
 
 ### Errors
 
@@ -170,6 +177,14 @@ connection failed after `DATA`; when that matters, send an `Idempotency-Key`.
 
 Unauthenticated, returns `200 ok` when the process is serving. It does not check
 Postfix, because the container health check already does.
+
+## Shutdown
+
+On `SIGTERM` the listener closes, in-flight submissions get `JMAIL_HTTP_DRAIN` (2s by
+default) to finish, and the process exits. The window is deliberately short: a submission
+to Postfix on the loopback completes in milliseconds, and a wedged Postfix should not hold
+a container stop open for the full submission timeout. s6 restarts the service if it ever
+exits unexpectedly.
 
 ## Podman quadlet
 
@@ -207,7 +222,12 @@ Every limit is an environment variable, see [Environment](../refs/environment.md
 - `JMAIL_HTTP_MAX_BYTES` caps the request body and the decoded attachments.
 - `JMAIL_HTTP_MAX_RECIPIENTS` caps `to` + `cc` + `bcc`. Duplicates are collapsed.
 - `JMAIL_HTTP_MAX_ATTACHMENTS` caps the attachment count.
-- `JMAIL_HTTP_CONCURRENCY` caps simultaneous SMTP submissions.
+- `subject` is capped at 900 bytes, and `headers` at 50 entries of 900 bytes each. The
+  cap is there because OpenDKIM rejects an oversized header block and the milter is set to
+  `accept`, so passing it would send the message **unsigned** instead of failing loudly.
+- `JMAIL_HTTP_CONCURRENCY` caps simultaneous SMTP submissions, and `JMAIL_HTTP_TIMEOUT`
+  bounds one submission including its wait for a free slot, so the queue of waiting
+  requests cannot grow without limit.
 - `JMAIL_HTTP_RATE` and `JMAIL_HTTP_RATE_BURST` are a token bucket over accepted
   requests, shared by all clients because there is one credential.
 
@@ -227,3 +247,9 @@ level=INFO msg=request id=9c1f5e2a7b3d4c60 method=POST path=/v1/send status=202 
 
 `id` is the value returned as `request_id` and echoed in the `X-Request-Id` header,
 which is the one to quote when a caller reports a problem.
+
+Access lines are sampled at `JMAIL_HTTP_LOG_RATE` per second, because a client that
+ignores `429` would otherwise write a line per rejected request and bury everything
+else. Dropped lines are counted, and the next line that gets through reports them as
+`suppressed=N`; while a flood continues a summary is emitted every five seconds.
+Successful `/healthz` probes are not logged; failures are.

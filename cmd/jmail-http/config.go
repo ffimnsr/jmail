@@ -24,6 +24,11 @@ type config struct {
 	smtpTimeout time.Duration
 	concurrency int
 
+	// drain bounds how long a SIGTERM waits for in-flight submissions. It has to
+	// stay under s6-overlay's S6_KILL_GRACETIME (3000 ms by default) and under
+	// the runtime's stop timeout, or the process is SIGKILLed before it finishes.
+	drain time.Duration
+
 	allowedFrom  []string
 	allowAnyFrom bool
 
@@ -33,6 +38,12 @@ type config struct {
 
 	rate  float64
 	burst int
+
+	// logRate caps access-log lines per second; 0 disables sampling.
+	logRate float64
+
+	// idempotencyDir holds the replay file. Empty disables persistence.
+	idempotencyDir string
 
 	idempotencyTTL time.Duration
 }
@@ -58,6 +69,9 @@ func loadConfig() (*config, error) {
 	if cfg.smtpTimeout, err = envDuration("JMAIL_HTTP_TIMEOUT", 30*time.Second); err != nil {
 		return nil, err
 	}
+	if cfg.drain, err = envDuration("JMAIL_HTTP_DRAIN", 2*time.Second); err != nil {
+		return nil, err
+	}
 	if cfg.concurrency, err = envInt("JMAIL_HTTP_CONCURRENCY", 16); err != nil {
 		return nil, err
 	}
@@ -76,8 +90,16 @@ func loadConfig() (*config, error) {
 	if cfg.rate, err = envFloat("JMAIL_HTTP_RATE", 10); err != nil {
 		return nil, err
 	}
+	if cfg.logRate, err = envFloatAllowZero("JMAIL_HTTP_LOG_RATE", 10); err != nil {
+		return nil, err
+	}
 	if cfg.idempotencyTTL, err = envDuration("JMAIL_HTTP_IDEMPOTENCY_TTL", time.Hour); err != nil {
 		return nil, err
+	}
+
+	cfg.idempotencyDir = envString("JMAIL_HTTP_IDEMPOTENCY_DIR", "/var/lib/jmail-http")
+	if strings.EqualFold(cfg.idempotencyDir, "off") || strings.EqualFold(cfg.idempotencyDir, "none") {
+		cfg.idempotencyDir = ""
 	}
 
 	cfg.allowedFrom, cfg.allowAnyFrom = parseAllowedFrom(envString("JMAIL_HTTP_ALLOWED_FROM", ""), cfg.origin)
@@ -179,6 +201,22 @@ func envFloat(key string, def float64) (float64, error) {
 	}
 	if f <= 0 {
 		return 0, fmt.Errorf("%s must be greater than zero, got %v", key, f)
+	}
+	return f, nil
+}
+
+// envFloatAllowZero is envFloat for settings where zero turns a feature off.
+func envFloatAllowZero(key string, def float64) (float64, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def, nil
+	}
+	f, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+	if f < 0 {
+		return 0, fmt.Errorf("%s must not be negative, got %v", key, f)
 	}
 	return f, nil
 }

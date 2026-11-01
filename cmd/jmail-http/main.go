@@ -48,6 +48,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	drain := cfg.drain
+
 	serveErr := make(chan error, 1)
 	go func() {
 		slog.Info("jmail-http listening",
@@ -58,6 +60,9 @@ func main() {
 			"allowed_from", cfg.allowedDomains(),
 			"max_bytes", cfg.maxBytes,
 			"rate", cfg.rate,
+			"log_rate", cfg.logRate,
+			"idempotency_dir", cfg.idempotencyDir,
+			"drain_timeout", drain.String(),
 		)
 		serveErr <- httpSrv.ListenAndServe()
 	}()
@@ -73,10 +78,10 @@ func main() {
 		slog.Info("signal received, shutting down")
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), drain)
 	defer cancel()
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-		slog.Error("graceful shutdown failed", "error", err)
+		slog.Error("graceful shutdown failed, closing connections", "error", err)
 		if closeErr := httpSrv.Close(); closeErr != nil {
 			slog.Error("forced close failed", "error", closeErr)
 		}
@@ -84,5 +89,6 @@ func main() {
 	}
 
 	slog.Info("stopped")
+	srv.close()
 	os.Exit(exitCode)
 }

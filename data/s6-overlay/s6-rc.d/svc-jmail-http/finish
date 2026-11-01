@@ -1,0 +1,9 @@
+#!/usr/bin/with-contenv bash
+
+# s6-supervise restarts a longrun as soon as it exits, with no backoff. A binary
+# that fails immediately (bad configuration, port already bound) would otherwise
+# spin at full speed and flood the log. Throttle failures to one restart per
+# second; a clean exit only happens during shutdown, where the delay is pointless.
+if [[ "${1:-0}" != "0" ]]; then
+  sleep 1
+fi

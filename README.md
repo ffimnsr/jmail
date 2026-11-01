@@ -85,8 +85,9 @@ curl -X POST http://127.0.0.1:8080/v1/send \
 
 It returns `202` with the Postfix queue id once the message is queued. The request is handed to Postfix over the
 loopback interface, so DKIM signing, retries and the queue behave exactly as they do for SMTP. Terminate TLS in front
-of the port with Caddy or Traefik; the container itself serves plain HTTP there. See
-[docs/src/guide/http-api.md](docs/src/guide/http-api.md).
+of the port with Caddy or Traefik; the container itself serves plain HTTP there. Idempotency records live in
+`/var/lib/jmail-http`, a declared volume: mount it if a retry should still replay after the container is recreated.
+See [docs/src/guide/http-api.md](docs/src/guide/http-api.md).
 
 ### Podman quadlet
 

@@ -17,6 +17,27 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
+)
+
+const (
+	// headerLineLength is the RFC 5322 recommendation. Postfix wraps lines past
+	// smtpd_line_length_limit in the cleanup stage, which runs after the milter
+	// has signed, so a long unfolded line would invalidate the DKIM signature.
+	headerLineLength = 78
+
+	// Caps on the caller-supplied header block. OpenDKIM's MaximumHeaders is 64K
+	// by default, and milter_default_action is accept, so an oversized header
+	// block does not fail the message: it quietly goes out unsigned.
+	maxSubjectBytes     = 900
+	maxHeaderValueBytes = 900
+	maxExtraHeaderCount = 50
+
+	// encodedWordChunk is the UTF-8 byte budget for one RFC 2047 encoded-word.
+	// Q-encoding can expand a non-ASCII byte to three characters (=XX), and a
+	// word may not exceed 75 characters, so 18 bytes leaves room for the charset
+	// prefix and the delimiters inside "Subject: " on a 78 column line.
+	encodedWordChunk = 18
 )
 
 type envelope struct {
@@ -109,6 +130,10 @@ func buildEnvelope(req *sendRequest, cfg *config) (*envelope, error) {
 	subject := strings.TrimSpace(req.Subject)
 	if err := validateHeaderValue(subject); err != nil {
 		return nil, newAPIError(http.StatusUnprocessableEntity, "invalid_request", "subject: %v", err)
+	}
+	if len(subject) > maxSubjectBytes {
+		return nil, newAPIError(http.StatusUnprocessableEntity, "invalid_request",
+			"subject must be at most %d bytes", maxSubjectBytes)
 	}
 	env.subject = subject
 
@@ -222,6 +247,10 @@ func normalizeExtraHeaders(in map[string]string) (map[string]string, error) {
 	if len(in) == 0 {
 		return nil, nil
 	}
+	if len(in) > maxExtraHeaderCount {
+		return nil, newAPIError(http.StatusUnprocessableEntity, "invalid_request",
+			"headers must contain at most %d entries", maxExtraHeaderCount)
+	}
 
 	reserved := reservedHeaders()
 	out := make(map[string]string, len(in))
@@ -242,6 +271,10 @@ func normalizeExtraHeaders(in map[string]string) (map[string]string, error) {
 		}
 		if err := validateHeaderValue(value); err != nil {
 			return nil, newAPIError(http.StatusUnprocessableEntity, "invalid_request", "headers: %s: %v", canonical, err)
+		}
+		if len(value) > maxHeaderValueBytes {
+			return nil, newAPIError(http.StatusUnprocessableEntity, "invalid_request",
+				"headers: %s must be at most %d bytes", canonical, maxHeaderValueBytes)
 		}
 		out[canonical] = strings.TrimSpace(value)
 	}
@@ -369,7 +402,7 @@ func (e *envelope) bytes(cfg *config, now time.Time) ([]byte, error) {
 	if len(e.replyTo) > 0 {
 		writeHeader(&out, "Reply-To", formatAddresses(e.replyTo))
 	}
-	writeHeader(&out, "Subject", mime.QEncoding.Encode("utf-8", e.subject))
+	writeHeader(&out, "Subject", encodeHeaderText(e.subject))
 	writeHeader(&out, "Message-ID", messageID)
 	writeHeader(&out, "MIME-Version", "1.0")
 	writeHeader(&out, "Content-Type", encoding.contentType)
@@ -523,11 +556,76 @@ func (l *lineWrapper) Write(p []byte) (int, error) {
 	return written, nil
 }
 
+// writeHeader writes "name: value" folded to headerLineLength. Folding happens
+// between whitespace-separated tokens, which is safe for every value the API
+// produces: address lists break after a comma, and adjacent RFC 2047
+// encoded-words are rejoined without the whitespace between them.
 func writeHeader(w *bytes.Buffer, name, value string) {
 	w.WriteString(name)
+	if strings.TrimSpace(value) == "" {
+		w.WriteString(":\r\n")
+		return
+	}
 	w.WriteString(": ")
-	w.WriteString(value)
+
+	lineLength := len(name) + 2
+	for i, token := range strings.Fields(value) {
+		switch {
+		case i == 0:
+			w.WriteString(token)
+			lineLength += len(token)
+		case lineLength+1+len(token) > headerLineLength:
+			w.WriteString("\r\n ")
+			w.WriteString(token)
+			lineLength = 1 + len(token)
+		default:
+			w.WriteString(" ")
+			w.WriteString(token)
+			lineLength += 1 + len(token)
+		}
+	}
 	w.WriteString("\r\n")
+}
+
+// encodeHeaderText returns an ASCII-only header value, splitting non-ASCII text
+// into several RFC 2047 encoded-words so a long subject can still be folded.
+// mime.QEncoding produces one word for the whole string, which would leave a
+// single line far past the 998 character limit.
+func encodeHeaderText(s string) string {
+	if isPrintableASCII(s) {
+		return s
+	}
+
+	var words []string
+	var chunk strings.Builder
+	chunkLen := 0
+
+	for _, r := range s {
+		size := utf8.RuneLen(r)
+		if size < 1 {
+			size = 1
+		}
+		if chunkLen+size > encodedWordChunk && chunkLen > 0 {
+			words = append(words, mime.QEncoding.Encode("utf-8", chunk.String()))
+			chunk.Reset()
+			chunkLen = 0
+		}
+		chunk.WriteRune(r)
+		chunkLen += size
+	}
+	if chunkLen > 0 {
+		words = append(words, mime.QEncoding.Encode("utf-8", chunk.String()))
+	}
+	return strings.Join(words, " ")
+}
+
+func isPrintableASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] > 0x7e {
+			return false
+		}
+	}
+	return true
 }
 
 func formatAddresses(addrs []*mail.Address) string {
