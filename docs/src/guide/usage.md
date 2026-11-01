@@ -187,3 +187,7 @@ curl -fsSL https://raw.githubusercontent.com/ffimnsr/jmail/master/scripts/check-
   the log for the remote server's TLS error.
 - **`postfix status` from inside the container** reports the running state, and
   `s6-rc -a list` shows the supervised services (`svc-postfix`, `svc-opendkim`, `svc-saslauthd`, `svc-syslog`).
+- **DKIM fails with "value contains literal quote characters".** The DNS provider stored the quotation marks from
+  `sendonly.txt` as part of the value, so receivers read a malformed key record. Paste the record unquoted, on one
+  line, and let the provider split it into 255-byte strings: `check-dns.sh` joins those back together before it
+  compares, so either quoting style shows up correctly in `dig`.

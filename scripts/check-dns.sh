@@ -403,7 +403,7 @@ check_port25() {
 
 check_domain() {
   local domain="$1" ip="$2" hostname="$3"
-  local record records record_count p_spf published_p p_dkim local_p mx
+  local record records record_count p_spf published_p p_dkim local_p mx dkim_raw
   local spf_ok=0 dkim_ok=0 dmarc dmarc_count p rua pct
 
   printf '\n%s\n' "$domain"
@@ -460,8 +460,17 @@ check_domain() {
   fi
 
   # DKIM ----------------------------------------------------------------
+  # A value that literally contains quote characters comes back from dig as
+  # \" - the usual cause is pasting the quoted string from sendonly.txt into
+  # the DNS provider, which stores the quotes as data. Receivers then read a
+  # malformed key record, so this is a failure worth naming outright.
+  dkim_raw="$(dig_q -t TXT "sendonly._domainkey.$domain" | head -1 || true)"
   published_p="$(dig_txt "sendonly._domainkey.$domain" | grep -i 'v=DKIM1' | head -1 || true)"
-  if [[ -z "$published_p" ]]; then
+  if [[ "$dkim_raw" == *'\"'* ]]; then
+    report FAIL "DKIM value contains literal quote characters"
+    detail "the quotes from sendonly.txt were stored as part of the value"
+    detail "paste it unquoted; the provider splits it into 255-byte strings itself"
+  elif [[ -z "$published_p" ]]; then
     report FAIL "DKIM not published at sendonly._domainkey.$domain"
     local_p="$(local_dkim_p "$domain" || true)"
     if [[ -n "$local_p" ]]; then
