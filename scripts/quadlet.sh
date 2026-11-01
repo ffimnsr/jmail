@@ -253,7 +253,10 @@ install_file "${OUTPUT_DIR}/jmail.container" "${UNIT_DIR}/jmail.container" 0644
 install_file "${OUTPUT_DIR}/jmail.env" "${ENV_FILE_PATH}" 0600
 
 systemctl_for_scope daemon-reload
-systemctl_for_scope enable --now jmail.service
+# Quadlet units are generated, and systemd refuses to enable a generated unit.
+# They do not need enabling: the unit's [Install] WantedBy=default.target is
+# what makes the generator pull it in at boot.
+systemctl_for_scope start jmail.service
 
 printf '\nInstalled %s\n' "${UNIT_DIR}/jmail.container"
 if [[ "$SCOPE" == "user" ]]; then
