@@ -101,6 +101,9 @@ start, so:
 - Editing the rendered files under `/etc/postfix` is overwritten on the next start.
 - Changing a template requires rebuilding the image.
 
+To change a Postfix setting the templates do not expose, or to run something at startup, use the override and hook
+directories instead of editing rendered files: see [Customization](../advanced/customization.md).
+
 ## DNS checklist
 
 Before sending production mail, work through this list:

@@ -27,6 +27,35 @@ dockerize \
 # dockerize writes rendered files with default permissions, so make the helper runnable.
 chmod 0755 /usr/local/bin/test-mail.sh
 
+# Overrides sit on top of the rendered main.cf, so settings the templates do not
+# expose can be changed without rebuilding the image. Each file holds one
+# `parameter = value` per line. Names are validated first because postconf(1)
+# exits 0 for an unknown parameter and only warns, which would otherwise leave a
+# container running against a main.cf Postfix silently ignores.
+shopt -s nullglob
+for override_file in /etc/jmail/postfix.d/*.conf; do
+  echo "Applying Postfix overrides from $override_file"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    if [[ -z "$line" || "$line" == \#* ]]; then
+      continue
+    fi
+    override_name="${line%%=*}"
+    override_name="${override_name%"${override_name##*[![:space:]]}"}"
+    if [[ "$override_name" == "$line" ]]; then
+      echo "error: $override_file: expected 'parameter = value', got: $line" >&2
+      exit 1
+    fi
+    override_error="$(postconf -h "$override_name" 2>&1 >/dev/null)"
+    if [[ -n "$override_error" ]]; then
+      echo "error: $override_file: $override_error" >&2
+      exit 1
+    fi
+    postconf -e "$line"
+  done <"$override_file"
+done
+
 echo "Creating temporary self-signed certificate for $JMAIL_ORIGIN"
 echo "Copy everything between the dashed lines into your mail client to trust the certificate"
 openssl req -x509 -noenc -sha384 -days 3650 -utf8 \
@@ -85,3 +114,13 @@ echo "${JMAIL_SMTP_PASSWORD}" | saslpasswd2 -p -c -u "${JMAIL_ORIGIN}" "${JMAIL_
 # Fix permission errors
 chown -R postfix:postfix /etc/sasl2
 chmod 660 /etc/sasl2/sasldb2
+
+# Hooks run last: the rendered configuration, certificate, DKIM key and SASL
+# account all exist, and none of the supervised services have started yet.
+for hook in /etc/jmail/init.d/*.sh; do
+  if [[ ! -x "$hook" ]]; then
+    continue
+  fi
+  echo "Running customization hook $hook"
+  "$hook"
+done

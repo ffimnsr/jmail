@@ -63,6 +63,25 @@ Restart=always
 WantedBy=multi-user.target default.target
 ```
 
+## Customization
+
+Two directories in the image exist to be mounted, so most changes do not need a rebuild:
+
+- `/etc/jmail/postfix.d/*.conf` holds `parameter = value` lines applied with `postconf -e` on every start, for
+  settings the templates do not expose (smarthost, rate limits, TLS policy).
+- `/etc/jmail/init.d/*.sh` holds executable hooks that run once the configuration, certificate, DKIM key and SASL
+  account exist, and before Postfix starts.
+
+```
+podman run -d --name jmail \
+  -v ./postfix.d:/etc/jmail/postfix.d:z \
+  -v ./init.d:/etc/jmail/init.d:z \
+  ...
+```
+
+Everything else, including replacing a template or adding a service to a derived image, is covered in
+[docs/src/advanced/customization.md](docs/src/advanced/customization.md).
+
 ## Mail Checklist
 
 This are the things you need to do before going to production:
@@ -82,6 +101,18 @@ This are the things you need to do before going to production:
 - [ ] Check if your IP is in email blacklists. De-list it.
 - [ ] Test your emails on https://mail-tester.com.
 
+
+## Releasing
+
+Releases are semver tags (`vX.Y.Z`) on `main`:
+
+```
+scripts/release.sh --patch     # or --minor, --major, or an explicit version
+```
+
+The script runs the release gates, writes the `CHANGELOG.md` section from the conventional commits since the
+previous tag, creates the `release: vX.Y.Z` commit, tags it and pushes. Pushing the tag is what builds and
+publishes `ghcr.io/ffimnsr/jmail` and deploys the documentation.
 
 ## License
 jmail is licensed under the Apache-2.0 License. See [LICENSE](LICENSE) file for more details.

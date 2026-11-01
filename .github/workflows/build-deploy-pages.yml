@@ -3,7 +3,7 @@ name: build-deploy-pages
 on:
   push:
     tags:
-      - 'release-*.*.*'
+      - 'v[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
 
 permissions:

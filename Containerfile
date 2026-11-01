@@ -73,6 +73,11 @@ RUN set -eux; \
 COPY /data/s6-overlay /etc/s6-overlay
 COPY /data/templates /etc/templates
 
+# Extension points, applied by init-mailer-config on every start. They exist in
+# the image so a derived image or a bind mount can drop files into them without
+# touching the templates.
+RUN mkdir -p /etc/jmail/init.d /etc/jmail/postfix.d
+
 VOLUME ["/var/spool/postfix", "/etc/postfix", "/etc/opendkim/keys"]
 
 ENTRYPOINT ["/init"]

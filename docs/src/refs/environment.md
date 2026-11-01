@@ -25,6 +25,15 @@ All variables are read when the container starts. Changing them on an existing c
 | `/etc/opendkim/keys` | DKIM private keys at `/etc/opendkim/keys/$JMAIL_ORIGIN/sendonly.private`. |
 | `/var/spool/postfix` | Postfix queue. |
 
+Two more directories are meant to be mounted but are not volumes, so they stay empty unless you fill them:
+
+| Path | Contents |
+| --- | --- |
+| `/etc/jmail/postfix.d` | `*.conf` files of `parameter = value` lines applied with `postconf -e` on every start. |
+| `/etc/jmail/init.d` | Executable `*.sh` hooks run after configuration, before services start. |
+
+See [Customization](../advanced/customization.md).
+
 ## Ports
 
 | Port | Service |
@@ -42,6 +51,8 @@ All variables are read when the container starts. Changing them on an existing c
 | `/etc/opendkim/opendkim.conf`, `key.table`, `signing.table`, `trusted.hosts` | Rendered on every start. |
 | `/etc/sasl2/smtpd.conf`, `/etc/syslog.conf` | Rendered on every start. |
 | `/usr/local/bin/test-mail.sh` | Generated helper that mails `JMAIL_ROOT_EMAIL`. |
+| `/etc/jmail/postfix.d` | User overrides applied on top of the rendered `main.cf`. |
+| `/etc/jmail/init.d` | User hooks, run last by `init-mailer-config`. |
 | `/etc/postfix/ssl/.generate` | Presence triggers regeneration of the self-signed certificate on the next start. |
 | `/etc/opendkim/keys/$JMAIL_ORIGIN/.generate` | Presence triggers a new DKIM key on the next start. |
 
@@ -52,7 +63,7 @@ scripts live under `/etc/s6-overlay/s6-rc.d`:
 
 | Service | Purpose |
 | --- | --- |
-| `init-mailer-config` | Oneshot: renders templates, creates the certificate, DKIM key and SASL account. |
+| `init-mailer-config` | Oneshot: renders templates, applies `/etc/jmail/postfix.d`, creates the certificate, DKIM key and SASL account, then runs `/etc/jmail/init.d` hooks. |
 | `svc-syslog` | `syslogd`, so Postfix and OpenDKIM logs reach the container output. |
 | `svc-opendkim` | OpenDKIM milter. |
 | `svc-saslauthd` | `saslauthd` with the `sasldb` backend. |
