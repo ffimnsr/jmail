@@ -156,6 +156,11 @@ tasks:
     commands:
       - podman exec "$JMAIL_TEST_CONTAINER" sh -c 'cat /etc/opendkim/keys/"$JMAIL_ORIGIN"/sendonly.txt'
 
+  check-dns:
+    description: Check the live DNS records jmail depends on (A, PTR, SPF, DKIM, DMARC)
+    commands:
+      - ./scripts/check-dns.sh
+
   docs:
     description: Serve the documentation locally with live reload
     when:

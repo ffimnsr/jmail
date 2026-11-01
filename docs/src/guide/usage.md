@@ -162,6 +162,23 @@ domain's `sendonly.txt`.
 - [ ] Check whether your IP is on an email blocklist (https://multirbl.valli.org), and delist it if it is.
 - [ ] Send a test message to https://www.mail-tester.com and check the report.
 
+`./scripts/check-dns.sh` covers the machine-checkable half of this list. It reads `~/.config/jmail/jmail.env`, so on
+the mail server it needs no arguments, and it queries the live zone rather than the values you intended to publish:
+the `A` record and forward-confirmed `PTR`, whether `SPF` authorizes the sending IP (following `include:` and
+`redirect=`), whether the `DKIM` key is published and matches the one in the container, and whether the `DMARC` policy
+would reject this server's mail. Each line reports `PASS`, `WARN`, `FAIL` or `INFO`, and any `FAIL` sets a non-zero
+exit status, so it can gate a deployment. It needs `dig` from `bind-utils` (Fedora/RHEL) or `dnsutils`
+(Debian/Ubuntu), and `mk check-dns` runs it from the repository.
+
+Without a clone, pipe it to `bash` the same way as the installer. Arguments go after `-s --`, and pinning a release tag
+instead of `master` keeps the check from changing under you:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ffimnsr/jmail/master/scripts/check-dns.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ffimnsr/jmail/master/scripts/check-dns.sh \
+  | bash -s -- --no-port-check --server-ip 203.0.113.10 example.com
+```
+
 ## Troubleshooting
 
 - **Authentication fails.** `JMAIL_SMTP_USER` and `JMAIL_SMTP_PASSWORD` are applied when the container starts;

@@ -188,6 +188,13 @@ side, so passing a local test send is not enough.
       the `/etc/postfix/ssl` volume. Swap them in if your clients or upstream relays verify certificates.
 - [ ] Check the IP against the major blocklists, for example https://multirbl.valli.org, and request delisting
       before the first send.
+- [ ] Verify everything above against the live zone with `./scripts/check-dns.sh`, or without a clone:
+      ```
+      curl -fsSL https://raw.githubusercontent.com/ffimnsr/jmail/master/scripts/check-dns.sh | bash
+      ```
+      It is described in the [DNS checklist](docs/src/guide/usage.md#dns-checklist). It needs `dig` (`bind-utils` on
+      Fedora/RHEL, `dnsutils` on Debian/Ubuntu) and reads `~/.config/jmail/jmail.env`, so on the mail server it takes
+      no arguments.
 - [ ] Send a real message to https://www.mail-tester.com and aim for a clean report before rolling out.
 
 ## Customization
@@ -225,6 +232,7 @@ them.
 | `mk test-go` | `go vet` and unit tests for the HTTP submission service |
 | `mk test-http` | `curl` smoke test of the HTTP API against the dev container |
 | `mk dkim` | Print the DKIM TXT record to publish |
+| `mk check-dns` | Check the live DNS records (A, PTR, SPF, DKIM, DMARC) of the installed service |
 | `mk install-githooks` | Point git at `.githooks/` so the pre-push checks run |
 | `mk uninstall-githooks` | Restore git's default `.git/hooks` directory |
 | `mk quadlet-generate` | Write `quadlet/jmail.container` and `quadlet/jmail.env` |
