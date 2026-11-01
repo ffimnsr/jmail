@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.16 - 2026-11-01
+
+### CI
+
+- fix cosign-installer ref (`a827e5d`)
+
 ## 1.0.15 - 2026-11-01
 
 ### Features
@@ -23,4 +29,3 @@
 
 - Add scripts for testing (`765dfae`)
 -  ci: share go checks via a composite action (`c698749`)
-
