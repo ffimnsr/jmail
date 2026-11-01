@@ -19,6 +19,9 @@ set -euo pipefail
 
 CONTAINER="jmail"
 SPF_MAX_DEPTH=10
+# What receivers ask, rather than whatever the local resolver has cached. Pass
+# --resolver system (or another address) to change it.
+RESOLVER="1.1.1.1"
 
 FAILS=0
 WARNS=0
@@ -66,8 +69,13 @@ Options:
   --env FILE        read JMAIL_HOSTNAME, JMAIL_ORIGIN and JMAIL_DOMAINS from FILE
                     (default: $XDG_CONFIG_HOME/jmail/jmail.env)
   --server-ip IP    check this sending IP instead of detecting it
+  --hostname NAME   banner hostname to check; defaults to JMAIL_HOSTNAME from the
+                    environment file, or mail.<domain> for a one-off check
   --no-port-check   skip the outbound port 25 check
   --container NAME  container holding the DKIM keys (default: jmail)
+  --resolver IP     query this resolver (default: 1.1.1.1, which is what
+                    receivers see); pass "system" to use the host's resolver,
+                    whose cached negative answers can hide a fresh record
   -h, --help        show this help
 
 Exit status: 0 if nothing failed, 1 if a check failed, 2 on a usage error.
@@ -76,9 +84,15 @@ EOF
 
 # --- DNS helpers ------------------------------------------------------------
 
-# dig without the noise: the caller decides what an empty answer means.
+# dig without the noise: the caller decides what an empty answer means. dig
+# writes "communications error" lines to stdout, so drop them here; otherwise
+# they read as answers and an unreachable resolver looks like empty records.
 dig_q() {
-  dig +short +timeout=3 +tries=2 "$@" 2>/dev/null || true
+  if [[ -n "$RESOLVER" && "$RESOLVER" != "system" ]]; then
+    dig +short +timeout=3 +tries=2 "@$RESOLVER" "$@" 2>/dev/null | grep -v '^;;' || true
+  else
+    dig +short +timeout=3 +tries=2 "$@" 2>/dev/null | grep -v '^;;' || true
+  fi
 }
 
 # TXT answers may come back as several quoted chunks on one line; join them.
@@ -408,6 +422,7 @@ check_domain() {
   local domain="$1" ip="$2" hostname="$3"
   local record records record_count p_spf published_p p_dkim local_p mx dkim_raw
   local spf_ok=0 dkim_ok=0 dmarc dmarc_count p rua pct parent parent_p
+  local ancestor inherited inherited_p inherited_rec
 
   printf '\n%s\n' "$domain"
 
@@ -516,8 +531,35 @@ check_domain() {
   records="$(dig_txt "_dmarc.$domain" | grep -i '^v=DMARC1' || true)"
   dmarc_count="$(printf '%s\n' "${records:-}" | grep -c . || true)"
   if [[ -z "$records" ]]; then
-    report WARN "no DMARC record at _dmarc.$domain"
-    detail "publish: v=DMARC1; p=none; rua=mailto:dmarc@$domain"
+    # DMARC still applies to a subdomain through the ancestor's sp= (or p=),
+    # so a missing record here is not necessarily an open policy.
+    ancestor="${domain#*.}"
+    inherited=""
+    inherited_p=""
+    while [[ "$ancestor" == *.* ]]; do
+      inherited_rec="$(dig_txt "_dmarc.$ancestor" | grep -i '^v=DMARC1' | head -1 || true)"
+      if [[ -n "$inherited_rec" ]]; then
+        inherited="$ancestor"
+        inherited_p="$(tag_value "$inherited_rec" sp)"
+        [[ -n "$inherited_p" ]] || inherited_p="$(tag_value "$inherited_rec" p)"
+        break
+      fi
+      ancestor="${ancestor#*.}"
+    done
+    if [[ -z "$inherited" ]]; then
+      report WARN "no DMARC record at _dmarc.$domain"
+      detail "publish: v=DMARC1; p=none; rua=mailto:dmarc@$domain"
+    elif [[ "$inherited_p" == "reject" || "$inherited_p" == "quarantine" ]]; then
+      if [[ "$spf_ok" == "0" && "$dkim_ok" == "0" ]]; then
+        report FAIL "DMARC inherits p=$inherited_p from _dmarc.$inherited, and neither SPF nor DKIM passes"
+        detail "mail this server sends is blocked by the inherited policy"
+      else
+        report PASS "no record here; inherits p=$inherited_p from _dmarc.$inherited, and a mechanism passes"
+      fi
+    else
+      report WARN "no record here; inherits p=${inherited_p:-none} from _dmarc.$inherited"
+      detail "publish one to control this domain directly"
+    fi
   elif ((dmarc_count > 1)); then
     report FAIL "more than one DMARC record; receivers ignore the policy"
   else
@@ -573,7 +615,7 @@ check_domain() {
 main() {
   local env_file="${XDG_CONFIG_HOME:-$HOME/.config}/jmail/jmail.env"
   local server_ip="" port_check=1 hostname="" origin="" domains_raw=""
-  local domains=() arg domain
+  local domains=() arg domain opt_hostname=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -604,6 +646,24 @@ main() {
         CONTAINER="$2"
         shift 2
         ;;
+      --hostname)
+        [[ $# -ge 2 ]] || die "--hostname needs a value"
+        opt_hostname="$2"
+        shift 2
+        ;;
+      --hostname=*)
+        opt_hostname="${1#*=}"
+        shift
+        ;;
+      --resolver)
+        [[ $# -ge 2 ]] || die "--resolver needs a value"
+        RESOLVER="$2"
+        shift 2
+        ;;
+      --resolver=*)
+        RESOLVER="${1#*=}"
+        shift
+        ;;
       -h | --help)
         usage
         exit 0
@@ -622,6 +682,15 @@ main() {
   done
 
   need_cmd dig || die "dig not found (install bind-utils, or dnsutils on Debian)"
+
+  # Fail early: an unreachable resolver answers nothing, which would otherwise
+  # look like every record is missing.
+  if [[ -z "$(dig_q NS .)" ]]; then
+    if [[ -n "$RESOLVER" && "$RESOLVER" != "system" ]]; then
+      die "resolver $RESOLVER is not answering; pass --resolver system or another address"
+    fi
+    die "the system resolver is not answering; pass --resolver 1.1.1.1"
+  fi
 
   # Domains on the command line win, so a one-off check of another zone does not
   # need an environment file at all.
@@ -652,6 +721,10 @@ main() {
 
   [[ -n "$server_ip" ]] || server_ip="$(detect_ip)"
   [[ -n "$server_ip" ]] || die "could not detect the sending IP; pass --server-ip"
+  # --hostname wins over the environment file, which wins over the fallback.
+  if [[ -n "$opt_hostname" ]]; then
+    hostname="$opt_hostname"
+  fi
   [[ -n "$hostname" ]] || hostname="mail.${domains[0]}"
   hostname="$(normalize_domain "$hostname")"
 
@@ -659,6 +732,7 @@ main() {
   printf '================\n'
   printf 'server ip : %s\n' "$server_ip"
   printf 'hostname  : %s\n' "$hostname"
+  printf 'resolver  : %s\n' "${RESOLVER:-system}"
   printf 'domains   : %s\n' "${domains[*]}"
 
   check_host "$hostname" "$server_ip"

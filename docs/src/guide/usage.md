@@ -168,7 +168,10 @@ the `A` record and forward-confirmed `PTR`, whether `SPF` authorizes the sending
 `redirect=`), whether the `DKIM` key is published and matches the one in the container, and whether the `DMARC` policy
 would reject this server's mail. Each line reports `PASS`, `WARN`, `FAIL` or `INFO`, and any `FAIL` sets a non-zero
 exit status, so it can gate a deployment. It needs `dig` from `bind-utils` (Fedora/RHEL) or `dnsutils`
-(Debian/Ubuntu), and `mk check-dns` runs it from the repository.
+(Debian/Ubuntu), and `mk check-dns` runs it from the repository. It queries `1.1.1.1` by default rather than the
+host's resolver: a machine that published a record moments ago can still be answering from a cached negative
+lookup, and a public resolver is closer to what receivers see. Use `--resolver system` for the local view, or another
+address to check from a different vantage point.
 
 Without a clone, pipe it to `bash` the same way as the installer. Arguments go after `-s --`, and pinning a release tag
 instead of `master` keeps the check from changing under you:
@@ -187,6 +190,10 @@ curl -fsSL https://raw.githubusercontent.com/ffimnsr/jmail/master/scripts/check-
   the log for the remote server's TLS error.
 - **`postfix status` from inside the container** reports the running state, and
   `s6-rc -a list` shows the supervised services (`svc-postfix`, `svc-opendkim`, `svc-saslauthd`, `svc-syslog`).
+- **A record you just published still reports as missing.** Resolvers cache negative answers for the zone's SOA
+  minimum, which Cloudflare sets to 30 minutes, so the machine that publishes a record can be the last to see it.
+  `check-dns.sh` avoids that by querying `1.1.1.1`; if you asked for the local view with `--resolver system`, flush it
+  with `sudo resolvectl flush-caches`.
 - **DKIM fails with "value contains literal quote characters".** The DNS provider stored the quotation marks from
   `sendonly.txt` as part of the value, so receivers read a malformed key record. Paste the record unquoted, on one
   line, and let the provider split it into 255-byte strings: `check-dns.sh` joins those back together before it
