@@ -102,7 +102,9 @@ jobs:
         uses: actions/checkout@v7
       - name: Install cosign
         if: github.event_name != 'pull_request'
-        uses: sigstore/cosign-installer@v4
+        # Pinned to a full version: unlike the other actions here, sigstore
+        # publishes no floating `v4` major tag (only `v4.x.y`).
+        uses: sigstore/cosign-installer@v4.1.2
         with:
           cosign-release: 'v3.1.4'
       - name: Set up Docker Buildx
