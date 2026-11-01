@@ -102,6 +102,25 @@ This are the things you need to do before going to production:
 - [ ] Test your emails on https://mail-tester.com.
 
 
+## Tasks
+
+The repository uses [`mk`](https://github.com/ffimnsr/mk-rs) for the day-to-day commands; `mk list` shows all of
+them.
+
+| Task | What it does |
+| --- | --- |
+| `mk build` | Build the image locally, labelled with the newest tag |
+| `mk up` | Start a disposable dev container on port `10587` |
+| `mk dev` / `mk logs` / `mk stop` | Run in the foreground, follow logs, remove the dev container |
+| `mk clean` | Remove the dev container and the local `.jmail/` state directory |
+| `mk test-mail` | Send the built-in test message to `JMAIL_ROOT_EMAIL` |
+| `mk test-auth` / `mk test-send` | Check STARTTLS + AUTH, then deliver a message through the container |
+| `mk dkim` | Print the DKIM TXT record to publish |
+| `mk quadlet-generate` | Write `quadlet/jmail.container` and `quadlet/jmail.env` |
+| `mk quadlet-install` | Install and start the user-scope quadlet |
+| `mk release-patch` | Cut a release; `release-minor` and `release-major` also exist |
+| `mk docs` / `mk docs-build` | Serve the documentation locally / build it into `./book` |
+
 ## Releasing
 
 Releases are semver tags (`vX.Y.Z`) on `main`:

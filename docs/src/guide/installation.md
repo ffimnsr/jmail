@@ -129,6 +129,21 @@ propagate image health checks into containers, so the quadlet above declares the
 explicit `127.0.0.1`: Postfix runs with `inet_protocols = ipv4`, so `localhost` may resolve to `::1` and the check
 would fail even when the service is up.
 
+### Generating the quadlet
+
+The repository ships a generator for the unit and its environment file:
+
+```sh
+./scripts/quadlet.sh                  # writes quadlet/jmail.container and quadlet/jmail.env
+./scripts/quadlet.sh --install        # user scope: ~/.config/containers/systemd, systemctl --user
+sudo ./scripts/quadlet.sh --scope system --install
+```
+
+It reads `JMAIL_IMAGE`, `JMAIL_HOSTNAME`, `JMAIL_ORIGIN`, `JMAIL_ROOT_EMAIL`, `JMAIL_SMTP_USER`,
+`JMAIL_SMTP_PASSWORD`, `JMAIL_MYNETWORKS` and `JMAIL_PUBLISH_PORT` from the environment, generates a random SMTP
+password when none is given, and writes the environment file with `0600` permissions. `--help` lists the defaults
+for each variable.
+
 ## Upgrading
 
 The container regenerates every rendered file from its templates on each start, so pulling a newer image and

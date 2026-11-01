@@ -1,0 +1,165 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/ffimnsr/mk-rs/main/docs/schema.json
+
+environment:
+  JMAIL_IMAGE: ghcr.io/ffimnsr/jmail:latest
+  JMAIL_TEST_CONTAINER: jmail-dev
+  JMAIL_TEST_PORT: "10587"
+  JMAIL_STATE_DIR: .jmail
+
+tasks:
+  build:
+    description: Build the image locally, labelled with the version from the newest tag
+    commands:
+      - ./package.sh
+
+  up:
+    description: Start a disposable dev container in the background on port 10587
+    depends_on:
+      - build
+    commands:
+      - |
+        mkdir -p "$JMAIL_STATE_DIR/postfix-ssl" "$JMAIL_STATE_DIR/opendkim-keys" \
+          "$JMAIL_STATE_DIR/spool" "$JMAIL_STATE_DIR/postfix.d" "$JMAIL_STATE_DIR/init.d"
+        set -a
+        . ./.env.test
+        set +a
+        podman rm -f "$JMAIL_TEST_CONTAINER" >/dev/null 2>&1 || true
+        podman run -d --name "$JMAIL_TEST_CONTAINER" \
+          -h "$JMAIL_HOSTNAME" \
+          --env-file .env.test \
+          -p "$JMAIL_TEST_PORT:587" \
+          -v "$PWD/$JMAIL_STATE_DIR/postfix-ssl:/etc/postfix/ssl:Z" \
+          -v "$PWD/$JMAIL_STATE_DIR/opendkim-keys:/etc/opendkim/keys:Z" \
+          -v "$PWD/$JMAIL_STATE_DIR/spool:/var/spool/postfix:Z" \
+          -v "$PWD/$JMAIL_STATE_DIR/postfix.d:/etc/jmail/postfix.d:Z" \
+          -v "$PWD/$JMAIL_STATE_DIR/init.d:/etc/jmail/init.d:Z" \
+          "$JMAIL_IMAGE"
+
+  dev:
+    description: Run in the foreground so the logs stream to the terminal
+    depends_on:
+      - build
+    commands:
+      - command: |
+          set -a
+          . ./.env.test
+          set +a
+          podman run --rm -it --name "$JMAIL_TEST_CONTAINER" \
+            -h "$JMAIL_HOSTNAME" \
+            --env-file .env.test \
+            -p "$JMAIL_TEST_PORT:587" \
+            "$JMAIL_IMAGE"
+        interactive: true
+
+  logs:
+    description: Follow the dev container logs
+    commands:
+      - command: podman logs -f --tail 100 "$JMAIL_TEST_CONTAINER"
+        interactive: true
+
+  stop:
+    description: Stop and remove the dev container
+    ignore_errors: true
+    commands:
+      - podman rm -f "$JMAIL_TEST_CONTAINER"
+
+  clean:
+    description: Stop the dev container and delete the local state directory
+    ignore_errors: true
+    commands:
+      - podman rm -f "$JMAIL_TEST_CONTAINER"
+      # The queue is written by root inside the container's user namespace, so
+      # `rm -rf` as the invoking user cannot delete it; unshare drops into that
+      # namespace instead.
+      - podman unshare rm -rf "$JMAIL_STATE_DIR"
+
+  shell:
+    description: Open a shell inside the dev container
+    commands:
+      - command: podman exec -it "$JMAIL_TEST_CONTAINER" bash
+        interactive: true
+
+  test-mail:
+    description: Send the built-in test message to JMAIL_ROOT_EMAIL
+    commands:
+      - podman exec "$JMAIL_TEST_CONTAINER" test-mail.sh
+
+  test-auth:
+    description: Check STARTTLS and SASL authentication against the dev container
+    commands:
+      - |
+        set -a
+        . ./.env.test
+        set +a
+        JMAIL_TEST_SERVER=127.0.0.1 \
+        JMAIL_TEST_PORT="$JMAIL_TEST_PORT" \
+        JMAIL_TEST_USER="$JMAIL_SMTP_USER" \
+        JMAIL_TEST_PASSWORD="$JMAIL_SMTP_PASSWORD" \
+          python3 test-auth.py
+
+  test-send:
+    description: Authenticate and deliver a message through the dev container
+    commands:
+      - |
+        set -a
+        . ./.env.test
+        set +a
+        JMAIL_TEST_SERVER=127.0.0.1 \
+        JMAIL_TEST_PORT="$JMAIL_TEST_PORT" \
+        JMAIL_TEST_USER="$JMAIL_SMTP_USER" \
+        JMAIL_TEST_PASSWORD="$JMAIL_SMTP_PASSWORD" \
+        JMAIL_TEST_SENDER="noreply@$JMAIL_ORIGIN" \
+        JMAIL_TEST_RECEIVER="$JMAIL_ROOT_EMAIL" \
+          python3 test-auth-send-mail.py
+
+  dkim:
+    description: Print the DKIM TXT record that has to be published in DNS
+    commands:
+      - podman exec "$JMAIL_TEST_CONTAINER" sh -c 'cat /etc/opendkim/keys/"$JMAIL_ORIGIN"/sendonly.txt'
+
+  docs:
+    description: Serve the documentation locally with live reload
+    when:
+      command_exists:
+        - mdbook
+    commands:
+      - command: mdbook serve --open docs
+        interactive: true
+
+  docs-build:
+    description: Build the documentation into ./book
+    when:
+      command_exists:
+        - mdbook
+    commands:
+      - mdbook build -d ../book docs
+
+  release-patch:
+    description: Cut a patch release (vX.Y.Z+1); use scripts/release.sh for other bumps
+    commands:
+      - ./scripts/release.sh --patch
+
+  release-minor:
+    description: Cut a minor release (vX.Y+1.0); use scripts/release.sh for other bumps
+    commands:
+      - ./scripts/release.sh --minor
+
+  release-major:
+    description: Cut a major release (vX+1.0.0); use scripts/release.sh for other bumps
+    commands:
+      - ./scripts/release.sh --major
+
+  quadlet-generate:
+    description: Generate quadlet/jmail.container and quadlet/jmail.env for a user-scope install
+    commands:
+      - ./scripts/quadlet.sh --output quadlet
+
+  quadlet-install:
+    description: Generate, install and start the user-scope quadlet
+    commands:
+      - ./scripts/quadlet.sh --install
+
+  quadlet-install-system:
+    description: Generate, install and start the system-scope quadlet (needs root)
+    commands:
+      - sudo ./scripts/quadlet.sh --scope system --install

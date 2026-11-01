@@ -15,6 +15,7 @@ image=ghcr.io/ffimnsr/$name
 # Release tags are `vX.Y.Z`; VERSION lets the release script label a build before the tag exists.
 latest_version=${VERSION:-$(git describe --tags --abbrev=0 2>/dev/null || true)}
 latest_version=${latest_version#v}
+latest_version=${latest_version#release-}
 latest_version=${latest_version:-dev}
 
 build_args=(

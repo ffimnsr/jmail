@@ -72,10 +72,15 @@ cat $TEMPLATES_DIR/postfix/ssl/server.crt
 echo "-----"
 
 POSTFIX_SSL_DIR=/etc/postfix/ssl
-if [[ ! -d "${POSTFIX_SSL_DIR}" ]]; then
-  mkdir -p $POSTFIX_SSL_DIR
-  cp -R /etc/templates/postfix/ssl/* $POSTFIX_SSL_DIR
-fi
+# Testing for the files, not the directory: /etc/postfix/ssl is commonly a mounted
+# volume, which exists but starts empty. Checking only for the directory would skip
+# the copy and leave Postfix without a certificate, so STARTTLS would fail.
+mkdir -p "$POSTFIX_SSL_DIR"
+for ssl_file in server.crt server.key; do
+  if [[ ! -f "$POSTFIX_SSL_DIR/$ssl_file" ]]; then
+    cp "$TEMPLATES_DIR/postfix/ssl/$ssl_file" "$POSTFIX_SSL_DIR/$ssl_file"
+  fi
+done
 
 POSTFIX_SSL_GENERATE_FILE="${POSTFIX_SSL_DIR}/.generate"
 echo "Checking SSL regeneration trigger"

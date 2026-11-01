@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 
+import os
 import smtplib
 import ssl
 
-smtp_server = "<ip-of-mail-server>"
-smtp_port = 11587
-smtp_auth_user = "jmail"
-smtp_auth_password = "mysecretpassword"
+smtp_server = os.environ.get("JMAIL_TEST_SERVER", "<ip-of-mail-server>")
+smtp_port = int(os.environ.get("JMAIL_TEST_PORT", "11587"))
+smtp_auth_user = os.environ.get("JMAIL_TEST_USER", "jmail")
+smtp_auth_password = os.environ.get("JMAIL_TEST_PASSWORD", "mysecretpassword")
 
 # jmail serves a self-signed certificate until you replace it, so verification is
 # skipped here. Point smtp_server at the certificate's JMAIL_ORIGIN and drop the
