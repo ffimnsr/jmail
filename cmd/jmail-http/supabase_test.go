@@ -214,7 +214,7 @@ func TestSupabaseHookQueuesEmail(t *testing.T) {
 		t.Fatalf("queued %d messages, want 1", len(messages))
 	}
 	raw := string(messages[0])
-	for _, want := range []string{"user@example.net", "Subject: Confirm your email address", "305805"} {
+	for _, want := range []string{"user@example.net", "Subject: Confirm your email address", "From: \"Example\" <noreply@example.com>", "305805", "Example", "Confirm email address", "text/html"} {
 		if !strings.Contains(raw, want) {
 			t.Errorf("message does not contain %q:\n%s", want, raw)
 		}
@@ -623,6 +623,131 @@ func TestSupabaseDedupeKeyIsOutOfClientNamespace(t *testing.T) {
 	}
 	if key == supabaseDedupeKey("other", "msg_1") {
 		t.Fatal("different projects produced the same key")
+	}
+}
+
+func TestSupabaseBrandName(t *testing.T) {
+	cases := []struct {
+		name    string
+		brand   string
+		siteURL string
+		want    string
+	}{
+		{"configured brand wins", "Makero", "https://app.example.com", "Makero"},
+		{"apex domain", "", "https://makero.diy", "Makero"},
+		{"subdomain", "", "https://app.makero.diy/welcome", "Makero"},
+		{"localhost", "", "http://localhost:3000", ""},
+		{"ip address", "", "https://127.0.0.1", ""},
+		{"empty", "", "", ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			hook := supabaseHook{brand: tc.brand}
+			if got := hook.brandName(tc.siteURL); got != tc.want {
+				t.Errorf("brandName(%q) = %q, want %q", tc.siteURL, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestComposeEmail(t *testing.T) {
+	t.Run("auth with link and code", func(t *testing.T) {
+		text, bodyHTML := composeEmail(emailContent{
+			brand:   "Makero",
+			heading: "Confirm your email address",
+			intro:   "Thanks for signing up.",
+			action:  "Confirm email address",
+			link:    "https://example.com/verify?token=abc&type=signup",
+			code:    "123456",
+			note:    "If you didn't request this, you can safely ignore this email.",
+		})
+
+		for _, want := range []string{
+			"Makero",
+			"Confirm your email address",
+			"Confirm email address",
+			"123456",
+			"https://example.com/verify?token=abc&amp;type=signup",
+		} {
+			if !strings.Contains(bodyHTML, want) {
+				t.Errorf("HTML is missing %q:\n%s", want, bodyHTML)
+			}
+		}
+		if strings.Contains(bodyHTML, "token=abc&type=") {
+			t.Error("the link in the HTML was not escaped")
+		}
+		for _, want := range []string{
+			"https://example.com/verify?token=abc&type=signup",
+			"123456",
+			"Makero",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("plain text is missing %q:\n%s", want, text)
+			}
+		}
+	})
+
+	t.Run("code only", func(t *testing.T) {
+		text, bodyHTML := composeEmail(emailContent{
+			brand:   "Makero",
+			heading: "Confirm it's you",
+			intro:   "Confirm your identity to continue.",
+			code:    "123456",
+			note:    "If you didn't request this, you can safely ignore this email.",
+		})
+		if strings.Contains(bodyHTML, "href=") {
+			t.Errorf("a code-only email must not contain a link:\n%s", bodyHTML)
+		}
+		if !strings.Contains(text, "Enter this code to continue:") {
+			t.Errorf("plain text is missing the code label:\n%s", text)
+		}
+		if !strings.Contains(text, "123456") {
+			t.Errorf("plain text is missing the code:\n%s", text)
+		}
+	})
+
+	t.Run("notification", func(t *testing.T) {
+		text, bodyHTML := composeEmail(emailContent{
+			brand:   "Makero",
+			heading: "Your password was changed",
+			lines:   []string{"The password for your account was changed."},
+			note:    "This is an automated security notice for your account.",
+		})
+		if !strings.Contains(bodyHTML, "Your password was changed") {
+			t.Errorf("HTML is missing the heading:\n%s", bodyHTML)
+		}
+		if strings.Contains(bodyHTML, "href=") {
+			t.Errorf("a notification must not contain a link:\n%s", bodyHTML)
+		}
+		if !strings.Contains(text, "The password for your account was changed.") {
+			t.Errorf("plain text is missing the notice:\n%s", text)
+		}
+	})
+}
+
+func TestSupabaseHookUsesConfiguredBrand(t *testing.T) {
+	fake := startFakeSMTP(t, "H00KBRND")
+	cfg := testConfig(fake.addr())
+	addTestHook(cfg, testHookSecret, "https://project.supabase.co", "noreply@example.com")
+	cfg.supabaseHooks[0].brand = "Makero"
+	srv := newTestServer(t, cfg)
+
+	body := supabasePayload("signup", "user@example.net", "305805", "abc123hash")
+	resp := postHook(t, srv, body, signWebhook(testHookSecret, "msg_brand", time.Now(), body))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	raw := string(fake.messages()[0])
+	if !strings.Contains(raw, "From: \"Makero\" <noreply@example.com>") {
+		t.Errorf("message is missing the branded sender:\n%s", raw)
+	}
+	if !strings.Contains(raw, "Makero") {
+		t.Errorf("message is missing the configured brand:\n%s", raw)
+	}
+	if strings.Contains(raw, "Example") {
+		t.Errorf("message used the derived brand instead of the configured one:\n%s", raw)
 	}
 }
 

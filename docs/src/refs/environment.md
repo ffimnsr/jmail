@@ -49,8 +49,9 @@ The HTTP submission API is off unless `JMAIL_HTTP_TOKEN` or `JMAIL_HTTP_SUPABASE
 | `JMAIL_HTTP_LOG_RATE` | `10` | Access-log lines per second, sampled with a token bucket. `0` logs every request. |
 | `JMAIL_HTTP_SUPABASE_HOOK_SECRET` | *(unset)* | Enables `POST /v1/hooks/supabase/send-email` for one project. Accepts the dashboard's `v1,whsec_<base64>` value or a bare base64 secret. |
 | `JMAIL_HTTP_SUPABASE_URL` | *(unset)* | Project API URL used to build confirmation links in those emails, for example `https://abcdefgh.supabase.co`. Without it the email carries only the numeric code. |
-| `JMAIL_HTTP_SUPABASE_FROM` | `noreply@JMAIL_ORIGIN` | Sender for Supabase hook emails. Must be within `JMAIL_HTTP_ALLOWED_FROM`. |
-| `JMAIL_HTTP_SUPABASE_<N>_HOOK_SECRET` | *(unset)* | A second, third, … project, with `N` from 1 to 16, and `JMAIL_HTTP_SUPABASE_<N>_URL` / `_FROM` alongside it. Each project signs with its own secret; the one that verifies selects that project's URL and sender. |
+| `JMAIL_HTTP_SUPABASE_FROM` | `noreply@JMAIL_ORIGIN` | Sender for Supabase hook emails. A bare address gets the brand as its display name; an explicit name such as `Makero <noreply@ses.makero.diy>` wins. Must be within `JMAIL_HTTP_ALLOWED_FROM`. |
+| `JMAIL_HTTP_SUPABASE_NAME` | site URL's domain label | Brand shown in the hook email header and footer. Defaults to the domain label of the project's site URL, so `makero.diy` becomes `Makero`. |
+| `JMAIL_HTTP_SUPABASE_<N>_HOOK_SECRET` | *(unset)* | A second, third, … project, with `N` from 1 to 16, and `JMAIL_HTTP_SUPABASE_<N>_URL` / `_FROM` / `_NAME` alongside it. Each project signs with its own secret; the one that verifies selects that project's URL, sender and brand. |
 
 ## Volumes
 

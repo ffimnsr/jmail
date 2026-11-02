@@ -122,7 +122,8 @@ func loadConfig() (*config, error) {
 	if raw := strings.TrimSpace(os.Getenv("JMAIL_HTTP_SUPABASE_HOOK_SECRET")); raw != "" {
 		hook, err := loadSupabaseHook(cfg, "JMAIL_HTTP_SUPABASE", raw,
 			envString("JMAIL_HTTP_SUPABASE_URL", ""),
-			envString("JMAIL_HTTP_SUPABASE_FROM", ""))
+			envString("JMAIL_HTTP_SUPABASE_FROM", ""),
+			envString("JMAIL_HTTP_SUPABASE_NAME", ""))
 		if err != nil {
 			return nil, err
 		}
@@ -137,7 +138,8 @@ func loadConfig() (*config, error) {
 		}
 		hook, err := loadSupabaseHook(cfg, prefix, raw,
 			envString(prefix+"_URL", ""),
-			envString(prefix+"_FROM", ""))
+			envString(prefix+"_FROM", ""),
+			envString(prefix+"_NAME", ""))
 		if err != nil {
 			return nil, err
 		}
@@ -161,7 +163,7 @@ const maxSupabaseHooks = 16
 
 // loadSupabaseHook validates one project's settings. The empty sender falls back
 // to noreply@JMAIL_ORIGIN, the same default a single-project deployment gets.
-func loadSupabaseHook(cfg *config, envPrefix, rawSecret, rawURL, rawFrom string) (supabaseHook, error) {
+func loadSupabaseHook(cfg *config, envPrefix, rawSecret, rawURL, rawFrom, rawBrand string) (supabaseHook, error) {
 	secret, err := parseWebhookSecret(rawSecret)
 	if err != nil {
 		return supabaseHook{}, fmt.Errorf("%s_HOOK_SECRET: %w", envPrefix, err)
@@ -179,15 +181,22 @@ func loadSupabaseHook(cfg *config, envPrefix, rawSecret, rawURL, rawFrom string)
 	if from == "" {
 		from = "noreply@" + cfg.origin
 	}
-	if _, err := mail.ParseAddress(from); err != nil {
+	parsedFrom, err := mail.ParseAddress(from)
+	if err != nil {
 		return supabaseHook{}, fmt.Errorf("%s_FROM: %w", envPrefix, err)
 	}
-	if !cfg.fromAllowed(from) {
+	if !cfg.fromAllowed(parsedFrom.Address) {
 		return supabaseHook{}, fmt.Errorf("%s_FROM %q is outside the allowed sender domains %v",
-			envPrefix, from, cfg.allowedDomains())
+			envPrefix, parsedFrom.Address, cfg.allowedDomains())
 	}
 
-	return supabaseHook{name: envPrefix, secret: secret, apiURL: apiURL, from: from}, nil
+	return supabaseHook{
+		name:   envPrefix,
+		brand:  strings.TrimSpace(rawBrand),
+		secret: secret,
+		apiURL: apiURL,
+		from:   from,
+	}, nil
 }
 
 // allowedDomains is the list used in error messages, so a rejected sender tells

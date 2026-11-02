@@ -106,6 +106,27 @@ func TestSupabaseHookConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("display name and brand", func(t *testing.T) {
+		secret := base64.StdEncoding.EncodeToString([]byte("hook-secret-bytes"))
+		t.Setenv("JMAIL_HTTP_TOKEN", "0123456789abcdef0123456789abcdef")
+		t.Setenv("JMAIL_ORIGIN", "example.com")
+		t.Setenv("JMAIL_HTTP_SUPABASE_HOOK_SECRET", "v1,whsec_"+secret)
+		t.Setenv("JMAIL_HTTP_SUPABASE_FROM", "Makero <noreply@example.com>")
+		t.Setenv("JMAIL_HTTP_SUPABASE_NAME", "Makero")
+
+		cfg, err := loadConfig()
+		if err != nil {
+			t.Fatalf("a display name in the sender should be accepted: %v", err)
+		}
+		hook := cfg.supabaseHooks[0]
+		if got, want := hook.from, "Makero <noreply@example.com>"; got != want {
+			t.Errorf("from = %q, want %q", got, want)
+		}
+		if got, want := hook.brand, "Makero"; got != want {
+			t.Errorf("brand = %q, want %q", got, want)
+		}
+	})
+
 	t.Run("hook secret works without a bearer token", func(t *testing.T) {
 		secret := base64.StdEncoding.EncodeToString([]byte("hook-secret-bytes"))
 		t.Setenv("JMAIL_HTTP_TOKEN", "")
@@ -143,6 +164,7 @@ func TestSupabaseHookConfig(t *testing.T) {
 		t.Setenv("JMAIL_HTTP_SUPABASE_1_HOOK_SECRET", "v1,whsec_"+first)
 		t.Setenv("JMAIL_HTTP_SUPABASE_1_URL", "https://one.supabase.co")
 		t.Setenv("JMAIL_HTTP_SUPABASE_1_FROM", "one@example.com")
+		t.Setenv("JMAIL_HTTP_SUPABASE_1_NAME", "One")
 		t.Setenv("JMAIL_HTTP_SUPABASE_2_HOOK_SECRET", "v1,whsec_"+second)
 		t.Setenv("JMAIL_HTTP_SUPABASE_2_URL", "https://two.supabase.co")
 
@@ -161,6 +183,9 @@ func TestSupabaseHookConfig(t *testing.T) {
 		}
 		if got, want := cfg.supabaseHooks[1].name, "JMAIL_HTTP_SUPABASE_2"; got != want {
 			t.Errorf("second name = %q, want %q", got, want)
+		}
+		if got, want := cfg.supabaseHooks[0].brand, "One"; got != want {
+			t.Errorf("first brand = %q, want %q", got, want)
 		}
 	})
 

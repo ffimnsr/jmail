@@ -264,6 +264,12 @@ fallback. Reauthentication is code-only: Supabase verifies that OTP as a nonce o
 identity and MFA notifications are rendered from `old_email`, `old_phone`, `provider` and `factor_type`; they carry no
 link and no code.
 
+Every message is `multipart/alternative`: a plain-text part and an HTML part with the brand in the header, a
+call-to-action button, a copyable fallback link, the numeric code, and a footer. The brand defaults to the domain
+label of the project's site URL (for example `makero.diy` becomes `Makero`) and can be set explicitly with
+`JMAIL_HTTP_SUPABASE[_<N>]_NAME`. The sender display name defaults to the brand when `JMAIL_HTTP_SUPABASE_FROM` is a
+bare address; an explicit name such as `Makero <noreply@ses.makero.diy>` overrides it.
+
 With Secure Email Change enabled Supabase sends two hashes, and its field names are reversed: `token_hash_new` belongs
 to the current address and `token_hash` to the new one. Two messages are queued, each with the code for its recipient.
 

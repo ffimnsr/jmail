@@ -12,7 +12,9 @@ import (
 	"html"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"strconv"
 	"strings"
@@ -58,6 +60,7 @@ type supabaseHookPayload struct {
 // name is the environment prefix it came from, for logs and error messages.
 type supabaseHook struct {
 	name   string
+	brand  string
 	secret []byte
 	apiURL string
 	from   string
@@ -70,6 +73,7 @@ type hookMessage struct {
 	token     string
 	tokenHash string
 	redirect  string
+	siteURL   string
 
 	// Notifications carry no token. Their subject and body lines are built from
 	// the change described in the payload.
@@ -149,7 +153,13 @@ func (c *config) supabaseMessages(p supabaseHookPayload) ([]hookMessage, error) 
 	// Notifications describe a change that already happened. They carry no OTP
 	// and no token hash, so they must not go through the token flow below.
 	if subject, lines, ok := supabaseNotification(action, p); ok {
-		return []hookMessage{{to: p.User.Email, action: action, subject: subject, lines: lines}}, nil
+		return []hookMessage{{
+			to:      p.User.Email,
+			action:  action,
+			subject: subject,
+			lines:   lines,
+			siteURL: p.EmailData.SiteURL,
+		}}, nil
 	}
 
 	// Reauthentication is verified as a nonce on the sensitive action, not by
@@ -160,14 +170,19 @@ func (c *config) supabaseMessages(p supabaseHookPayload) ([]hookMessage, error) 
 		if p.EmailData.Token == "" {
 			return nil, fmt.Errorf("email_data.token is empty for reauthentication")
 		}
-		return []hookMessage{{to: p.User.Email, action: action, token: p.EmailData.Token}}, nil
+		return []hookMessage{{
+			to:      p.User.Email,
+			action:  action,
+			token:   p.EmailData.Token,
+			siteURL: p.EmailData.SiteURL,
+		}}, nil
 	}
 
 	if action == "email_change" {
 		if p.EmailData.TokenHashNew != "" && p.EmailData.TokenHash != "" && p.User.NewEmail != "" {
 			return []hookMessage{
-				{to: p.User.Email, action: action, token: p.EmailData.Token, tokenHash: p.EmailData.TokenHashNew, redirect: p.EmailData.RedirectTo},
-				{to: p.User.NewEmail, action: action, token: p.EmailData.TokenNew, tokenHash: p.EmailData.TokenHash, redirect: p.EmailData.RedirectTo},
+				{to: p.User.Email, action: action, token: p.EmailData.Token, tokenHash: p.EmailData.TokenHashNew, redirect: p.EmailData.RedirectTo, siteURL: p.EmailData.SiteURL},
+				{to: p.User.NewEmail, action: action, token: p.EmailData.TokenNew, tokenHash: p.EmailData.TokenHash, redirect: p.EmailData.RedirectTo, siteURL: p.EmailData.SiteURL},
 			}, nil
 		}
 
@@ -182,7 +197,14 @@ func (c *config) supabaseMessages(p supabaseHookPayload) ([]hookMessage, error) 
 		if hash == "" {
 			return nil, fmt.Errorf("email_data has no token hash for the email change")
 		}
-		return []hookMessage{{to: to, action: action, token: token, tokenHash: hash, redirect: p.EmailData.RedirectTo}}, nil
+		return []hookMessage{{
+			to:        to,
+			action:    action,
+			token:     token,
+			tokenHash: hash,
+			redirect:  p.EmailData.RedirectTo,
+			siteURL:   p.EmailData.SiteURL,
+		}}, nil
 	}
 
 	if p.EmailData.TokenHash == "" {
@@ -194,25 +216,44 @@ func (c *config) supabaseMessages(p supabaseHookPayload) ([]hookMessage, error) 
 		token:     p.EmailData.Token,
 		tokenHash: p.EmailData.TokenHash,
 		redirect:  p.EmailData.RedirectTo,
+		siteURL:   p.EmailData.SiteURL,
 	}}, nil
 }
 
 func supabaseSubject(action string) (subject, intro string) {
 	switch action {
 	case "signup":
-		return "Confirm your email address", "Confirm your email address to finish signing up."
+		return "Confirm your email address", "Thanks for signing up. Confirm your email address to finish setting up your account."
 	case "recovery":
-		return "Reset your password", "Follow the link to choose a new password."
+		return "Reset your password", "We received a request to reset your password. Use the button below to choose a new password."
 	case "invite":
-		return "You have been invited", "Accept the invitation to create your account."
+		return "You have been invited", "You've been invited to create an account. Use the button below to accept the invitation."
 	case "magiclink":
-		return "Your magic link", "Follow the link to sign in."
+		return "Your magic link", "Use the button below to sign in to your account."
 	case "email_change":
-		return "Confirm your email change", "Confirm this change of email address."
+		return "Confirm your email change", "Confirm this change of email address for your account."
 	case "reauthentication":
 		return "Confirm it's you", "Confirm your identity to continue."
 	default:
 		return "Confirm your email", "Confirm your email address to continue."
+	}
+}
+
+// supabaseActionLabel is the call to action on the HTML button.
+func supabaseActionLabel(action string) string {
+	switch action {
+	case "signup":
+		return "Confirm email address"
+	case "recovery":
+		return "Reset password"
+	case "invite":
+		return "Accept invitation"
+	case "magiclink":
+		return "Sign in"
+	case "email_change":
+		return "Confirm email change"
+	default:
+		return "Continue"
 	}
 }
 
@@ -285,25 +326,177 @@ func supabaseNotification(action string, p supabaseHookPayload) (subject string,
 	return "", nil, false
 }
 
-// composeNotificationBody renders the lines as paragraphs, so a value such as an
-// old address or a provider name cannot inject markup.
-func composeNotificationBody(lines []string) (text, bodyHTML string) {
+// brandName is the wordmark shown in the email header and footer. The project's
+// site URL is the best default when JMAIL_HTTP_SUPABASE[_<N>]_NAME is unset.
+func (h supabaseHook) brandName(siteURL string) string {
+	if h.brand != "" {
+		return h.brand
+	}
+	parsed, err := url.Parse(strings.TrimSpace(siteURL))
+	if err != nil {
+		return ""
+	}
+	host := strings.TrimPrefix(strings.ToLower(parsed.Hostname()), "www.")
+	if host == "" || host == "localhost" || net.ParseIP(host) != nil {
+		return ""
+	}
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return ""
+	}
+	name := labels[len(labels)-2]
+	if name == "" {
+		return ""
+	}
+	return strings.ToUpper(name[:1]) + name[1:]
+}
+
+// sender adds the brand as a display name when the configured From is a bare
+// address, so the inbox shows "Makero" instead of the raw mailbox. An explicit
+// display name in JMAIL_HTTP_SUPABASE[_<N>]_FROM always wins.
+func (h supabaseHook) sender(brand string) string {
+	if brand == "" {
+		return h.from
+	}
+	addr, err := mail.ParseAddress(h.from)
+	if err != nil || addr.Name != "" {
+		return h.from
+	}
+	return (&mail.Address{Name: brand, Address: addr.Address}).String()
+}
+
+// emailContent is the shared body for auth mail and account notifications.
+type emailContent struct {
+	brand   string
+	heading string
+	intro   string
+	action  string
+	link    string
+	code    string
+	note    string
+	lines   []string
+}
+
+// composeEmail renders a plain-text part and a responsive HTML part. Everything
+// dynamic is escaped, so a display name, old address, or provider value cannot
+// inject markup.
+func composeEmail(c emailContent) (text, bodyHTML string) {
 	var plain strings.Builder
 	plain.WriteString("Hi,\n\n")
-	for _, line := range lines {
+	if c.intro != "" {
+		plain.WriteString(c.intro)
+		plain.WriteString("\n\n")
+	}
+	for _, line := range c.lines {
 		plain.WriteString(line)
 		plain.WriteString("\n\n")
 	}
-	plain.WriteString("This is an automated security notice for your account.\n")
-
-	var markup strings.Builder
-	markup.WriteString("<p>Hi,</p>\n")
-	for _, line := range lines {
-		markup.WriteString("<p>" + html.EscapeString(line) + "</p>\n")
+	if c.link != "" {
+		if c.action != "" {
+			plain.WriteString(c.action)
+			plain.WriteString(":\n")
+		}
+		plain.WriteString(c.link)
+		plain.WriteString("\n\n")
 	}
-	markup.WriteString("<p>This is an automated security notice for your account.</p>\n")
+	if c.code != "" {
+		if c.link != "" {
+			plain.WriteString("Or enter this code: ")
+		} else {
+			plain.WriteString("Enter this code to continue: ")
+		}
+		plain.WriteString(c.code)
+		plain.WriteString("\n\n")
+	}
+	if c.note != "" {
+		plain.WriteString(c.note)
+		plain.WriteString("\n\n")
+	}
+	plain.WriteString("Please do not reply to this message.\n")
+	if c.brand != "" {
+		plain.WriteString("\n—\n")
+		plain.WriteString(c.brand)
+		plain.WriteString("\n")
+	}
 
-	return plain.String(), markup.String()
+	preheader := c.intro
+	if preheader == "" {
+		preheader = c.heading
+	}
+	escapedLink := html.EscapeString(c.link)
+
+	var b strings.Builder
+	b.WriteString(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>`)
+	b.WriteString(html.EscapeString(c.heading))
+	b.WriteString(`</title></head><body style="margin:0;padding:0;background:#f4f5f7;">`)
+	b.WriteString(`<div style="display:none;max-height:0;overflow:hidden;mso-hide:all;">`)
+	b.WriteString(html.EscapeString(preheader))
+	b.WriteString(`</div>`)
+	b.WriteString(`<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f4f5f7;padding:24px 12px;"><tr><td align="center">`)
+	b.WriteString(`<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">`)
+
+	if c.brand != "" {
+		b.WriteString(`<tr><td style="padding:28px 32px 0 32px;font-size:16px;font-weight:700;letter-spacing:0.02em;color:#111827;">`)
+		b.WriteString(html.EscapeString(c.brand))
+		b.WriteString(`</td></tr>`)
+	}
+
+	b.WriteString(`<tr><td style="padding:24px 32px 0 32px;">`)
+	b.WriteString(`<h1 style="margin:0 0 12px 0;font-size:22px;line-height:30px;font-weight:700;color:#111827;">`)
+	b.WriteString(html.EscapeString(c.heading))
+	b.WriteString(`</h1>`)
+	if c.intro != "" {
+		b.WriteString(`<p style="margin:0 0 20px 0;font-size:15px;line-height:24px;color:#374151;">`)
+		b.WriteString(html.EscapeString(c.intro))
+		b.WriteString(`</p>`)
+	}
+	for _, line := range c.lines {
+		b.WriteString(`<p style="margin:0 0 16px 0;font-size:15px;line-height:24px;color:#374151;">`)
+		b.WriteString(html.EscapeString(line))
+		b.WriteString(`</p>`)
+	}
+	if c.link != "" && c.action != "" {
+		b.WriteString(`<table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 20px 0;"><tr><td align="center" bgcolor="#111827" style="border-radius:8px;"><a href="`)
+		b.WriteString(escapedLink)
+		b.WriteString(`" target="_blank" style="display:inline-block;padding:13px 24px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:15px;font-weight:600;line-height:20px;color:#ffffff;text-decoration:none;border-radius:8px;">`)
+		b.WriteString(html.EscapeString(c.action))
+		b.WriteString(`</a></td></tr></table>`)
+	}
+	if c.link != "" {
+		b.WriteString(`<p style="margin:0 0 6px 0;font-size:12px;line-height:18px;color:#6b7280;">If the button doesn't work, copy and paste this link into your browser:</p>`)
+		b.WriteString(`<p style="margin:0 0 20px 0;font-size:12px;line-height:18px;word-break:break-all;"><a href="`)
+		b.WriteString(escapedLink)
+		b.WriteString(`" target="_blank" style="color:#2563eb;text-decoration:underline;">`)
+		b.WriteString(escapedLink)
+		b.WriteString(`</a></p>`)
+	}
+	if c.code != "" {
+		label := "Or enter this code:"
+		if c.link == "" {
+			label = "Enter this code to continue:"
+		}
+		b.WriteString(`<p style="margin:0 0 8px 0;font-size:13px;line-height:20px;color:#6b7280;">`)
+		b.WriteString(label)
+		b.WriteString(`</p><div style="display:inline-block;padding:12px 18px;border:1px solid #e5e7eb;border-radius:8px;background:#f9fafb;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:22px;line-height:28px;font-weight:700;letter-spacing:3px;color:#111827;">`)
+		b.WriteString(html.EscapeString(c.code))
+		b.WriteString(`</div>`)
+	}
+	b.WriteString(`</td></tr>`)
+	b.WriteString(`<tr><td style="padding:24px 32px 28px 32px;"><hr style="border:0;border-top:1px solid #e5e7eb;margin:0 0 16px 0;">`)
+	if c.note != "" {
+		b.WriteString(`<p style="margin:0 0 6px 0;font-size:12px;line-height:18px;color:#6b7280;">`)
+		b.WriteString(html.EscapeString(c.note))
+		b.WriteString(`</p>`)
+	}
+	b.WriteString(`<p style="margin:0;font-size:12px;line-height:18px;color:#9ca3af;">Please do not reply to this message.</p>`)
+	if c.brand != "" {
+		b.WriteString(`<p style="margin:12px 0 0 0;font-size:12px;line-height:18px;color:#9ca3af;">`)
+		b.WriteString(html.EscapeString(c.brand))
+		b.WriteString(`</p>`)
+	}
+	b.WriteString(`</td></tr></table></td></tr></table></body></html>`)
+
+	return plain.String(), b.String()
 }
 
 // verifyURL builds the link Supabase Auth documents for the hook receiver. It
@@ -321,42 +514,18 @@ func (h supabaseHook) verifyURL(action, tokenHash, redirectTo string) string {
 	return h.apiURL + "/auth/v1/verify?" + query.Encode()
 }
 
-func composeSupabaseBody(intro, link, token string) (text, bodyHTML string) {
-	var plain strings.Builder
-	plain.WriteString("Hi,\n\n")
-	plain.WriteString(intro)
-	plain.WriteString("\n\n")
-	if link != "" {
-		plain.WriteString(link)
-		plain.WriteString("\n\n")
-	}
-	if token != "" {
-		plain.WriteString("Or enter this code: ")
-		plain.WriteString(token)
-		plain.WriteString("\n\n")
-	}
-	plain.WriteString("If you did not request this, you can ignore this email.\n")
-
-	var markup strings.Builder
-	markup.WriteString("<p>Hi,</p>\n")
-	markup.WriteString("<p>" + html.EscapeString(intro) + "</p>\n")
-	if link != "" {
-		escaped := html.EscapeString(link)
-		markup.WriteString(`<p><a href="` + escaped + `">` + escaped + "</a></p>\n")
-	}
-	if token != "" {
-		markup.WriteString("<p>Or enter this code: <strong>" + html.EscapeString(token) + "</strong></p>\n")
-	}
-	markup.WriteString("<p>If you did not request this, you can ignore this email.</p>\n")
-
-	return plain.String(), markup.String()
-}
-
 func (h supabaseHook) request(m hookMessage) (*sendRequest, error) {
+	brand := h.brandName(m.siteURL)
+	from := h.sender(brand)
 	if m.subject != "" {
-		text, bodyHTML := composeNotificationBody(m.lines)
+		text, bodyHTML := composeEmail(emailContent{
+			brand:   brand,
+			heading: m.subject,
+			lines:   m.lines,
+			note:    "This is an automated security notice for your account.",
+		})
 		return &sendRequest{
-			From:    h.from,
+			From:    from,
 			To:      []string{m.to},
 			Subject: m.subject,
 			Text:    text,
@@ -369,10 +538,23 @@ func (h supabaseHook) request(m hookMessage) (*sendRequest, error) {
 		return nil, fmt.Errorf("no confirmation link and no token to send")
 	}
 	subject, intro := supabaseSubject(m.action)
-	text, bodyHTML := composeSupabaseBody(intro, link, m.token)
+	action := supabaseActionLabel(m.action)
+	if link == "" {
+		// Reauthentication is code-only: its token hash is not a verify link.
+		action = ""
+	}
+	text, bodyHTML := composeEmail(emailContent{
+		brand:   brand,
+		heading: subject,
+		intro:   intro,
+		action:  action,
+		link:    link,
+		code:    m.token,
+		note:    "If you didn't request this, you can safely ignore this email.",
+	})
 
 	return &sendRequest{
-		From:    h.from,
+		From:    from,
 		To:      []string{m.to},
 		Subject: subject,
 		Text:    text,
