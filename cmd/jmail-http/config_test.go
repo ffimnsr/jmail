@@ -71,8 +71,8 @@ func TestSupabaseHookConfig(t *testing.T) {
 		if err != nil {
 			t.Fatalf("loadConfig: %v", err)
 		}
-		if cfg.supabaseHookSecret != nil {
-			t.Fatal("the hook should be disabled when no secret is set")
+		if len(cfg.supabaseHooks) != 0 {
+			t.Fatalf("configured %d hooks, want 0 when no secret is set", len(cfg.supabaseHooks))
 		}
 	})
 
@@ -88,14 +88,21 @@ func TestSupabaseHookConfig(t *testing.T) {
 		if err != nil {
 			t.Fatalf("loadConfig: %v", err)
 		}
-		if got, want := string(cfg.supabaseHookSecret), "hook-secret-bytes"; got != want {
+		if len(cfg.supabaseHooks) != 1 {
+			t.Fatalf("configured %d hooks, want 1", len(cfg.supabaseHooks))
+		}
+		hook := cfg.supabaseHooks[0]
+		if got, want := string(hook.secret), "hook-secret-bytes"; got != want {
 			t.Errorf("secret = %q, want %q", got, want)
 		}
-		if got, want := cfg.supabaseURL, "https://project.supabase.co"; got != want {
+		if got, want := hook.apiURL, "https://project.supabase.co"; got != want {
 			t.Errorf("url = %q, want %q (trailing slash trimmed)", got, want)
 		}
-		if got, want := cfg.supabaseFrom, "noreply@example.com"; got != want {
+		if got, want := hook.from, "noreply@example.com"; got != want {
 			t.Errorf("from = %q, want %q", got, want)
+		}
+		if got, want := hook.name, "JMAIL_HTTP_SUPABASE"; got != want {
+			t.Errorf("name = %q, want %q", got, want)
 		}
 	})
 
@@ -112,7 +119,7 @@ func TestSupabaseHookConfig(t *testing.T) {
 		if cfg.token != "" {
 			t.Errorf("token = %q, want empty", cfg.token)
 		}
-		if cfg.supabaseHookSecret == nil {
+		if len(cfg.supabaseHooks) != 1 {
 			t.Fatal("the hook should be enabled")
 		}
 	})
@@ -124,6 +131,49 @@ func TestSupabaseHookConfig(t *testing.T) {
 
 		if _, err := loadConfig(); err == nil {
 			t.Fatal("a service with nothing to serve should refuse to start")
+		}
+	})
+
+	t.Run("several projects", func(t *testing.T) {
+		first := base64.StdEncoding.EncodeToString([]byte("secret-one"))
+		second := base64.StdEncoding.EncodeToString([]byte("secret-two"))
+		t.Setenv("JMAIL_HTTP_TOKEN", "")
+		t.Setenv("JMAIL_ORIGIN", "example.com")
+		t.Setenv("JMAIL_HTTP_SUPABASE_HOOK_SECRET", "")
+		t.Setenv("JMAIL_HTTP_SUPABASE_1_HOOK_SECRET", "v1,whsec_"+first)
+		t.Setenv("JMAIL_HTTP_SUPABASE_1_URL", "https://one.supabase.co")
+		t.Setenv("JMAIL_HTTP_SUPABASE_1_FROM", "one@example.com")
+		t.Setenv("JMAIL_HTTP_SUPABASE_2_HOOK_SECRET", "v1,whsec_"+second)
+		t.Setenv("JMAIL_HTTP_SUPABASE_2_URL", "https://two.supabase.co")
+
+		cfg, err := loadConfig()
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		if len(cfg.supabaseHooks) != 2 {
+			t.Fatalf("configured %d hooks, want 2", len(cfg.supabaseHooks))
+		}
+		if got, want := cfg.supabaseHooks[0].from, "one@example.com"; got != want {
+			t.Errorf("first from = %q, want %q", got, want)
+		}
+		if got, want := cfg.supabaseHooks[1].from, "noreply@example.com"; got != want {
+			t.Errorf("second from = %q, want the JMAIL_ORIGIN default %q", got, want)
+		}
+		if got, want := cfg.supabaseHooks[1].name, "JMAIL_HTTP_SUPABASE_2"; got != want {
+			t.Errorf("second name = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("a broken second project fails at startup", func(t *testing.T) {
+		first := base64.StdEncoding.EncodeToString([]byte("secret-one"))
+		t.Setenv("JMAIL_HTTP_TOKEN", "")
+		t.Setenv("JMAIL_ORIGIN", "example.com")
+		t.Setenv("JMAIL_HTTP_SUPABASE_HOOK_SECRET", "")
+		t.Setenv("JMAIL_HTTP_SUPABASE_1_HOOK_SECRET", "v1,whsec_"+first)
+		t.Setenv("JMAIL_HTTP_SUPABASE_2_HOOK_SECRET", "not base64!")
+
+		if _, err := loadConfig(); err == nil {
+			t.Fatal("a bad secret in any project should stop startup")
 		}
 	})
 

@@ -67,7 +67,7 @@ func (s *server) routes() http.Handler {
 	// Supabase Auth signs with Standard Webhooks instead of the bearer token, so
 	// this route authenticates the request itself. It is not mounted unless a
 	// secret is configured.
-	if s.cfg.supabaseHookSecret != nil {
+	if s.cfg.supabaseHooks != nil {
 		mux.HandleFunc(supabaseHookPattern, s.handleSupabaseSendEmail)
 	}
 	return s.instrument(mux)

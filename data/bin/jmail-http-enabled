@@ -1,0 +1,23 @@
+#!/bin/sh
+#
+# Succeeds when some jmail-http feature is configured: the bearer token, the
+# unnumbered Supabase hook secret, or any JMAIL_HTTP_SUPABASE_<N>_HOOK_SECRET.
+# The s6 service and the image health check both call this, so they cannot
+# disagree about whether the API is supposed to be running.
+set -eu
+
+if [ -n "${JMAIL_HTTP_TOKEN:-}" ] || [ -n "${JMAIL_HTTP_SUPABASE_HOOK_SECRET:-}" ]; then
+  exit 0
+fi
+
+# 16 matches maxSupabaseHooks in cmd/jmail-http/config.go.
+i=1
+while [ "$i" -le 16 ]; do
+  eval "secret=\${JMAIL_HTTP_SUPABASE_${i}_HOOK_SECRET:-}"
+  if [ -n "$secret" ]; then
+    exit 0
+  fi
+  i=$((i + 1))
+done
+
+exit 1

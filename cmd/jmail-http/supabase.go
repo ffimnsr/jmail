@@ -48,6 +48,16 @@ type supabaseHookPayload struct {
 	} `json:"email_data"`
 }
 
+// supabaseHook is one Supabase project: the secret its requests are signed
+// with, the project API URL used for confirmation links, and the sender. The
+// name is the environment prefix it came from, for logs and error messages.
+type supabaseHook struct {
+	name   string
+	secret []byte
+	apiURL string
+	from   string
+}
+
 // hookMessage is one email to send. A secure email change produces two.
 type hookMessage struct {
 	to        string
@@ -181,8 +191,8 @@ func supabaseSubject(action string) (subject, intro string) {
 
 // verifyURL builds the link Supabase Auth documents for the hook receiver. It
 // needs the project's API URL, which the payload does not carry.
-func (c *config) verifyURL(action, tokenHash, redirectTo string) string {
-	if c.supabaseURL == "" || tokenHash == "" {
+func (h supabaseHook) verifyURL(action, tokenHash, redirectTo string) string {
+	if h.apiURL == "" || tokenHash == "" {
 		return ""
 	}
 	query := url.Values{}
@@ -191,7 +201,7 @@ func (c *config) verifyURL(action, tokenHash, redirectTo string) string {
 	if redirectTo != "" {
 		query.Set("redirect_to", redirectTo)
 	}
-	return c.supabaseURL + "/auth/v1/verify?" + query.Encode()
+	return h.apiURL + "/auth/v1/verify?" + query.Encode()
 }
 
 func composeSupabaseBody(intro, link, token string) (text, bodyHTML string) {
@@ -225,8 +235,8 @@ func composeSupabaseBody(intro, link, token string) (text, bodyHTML string) {
 	return plain.String(), markup.String()
 }
 
-func (c *config) supabaseRequest(m hookMessage) (*sendRequest, error) {
-	link := c.verifyURL(m.action, m.tokenHash, m.redirect)
+func (h supabaseHook) request(m hookMessage) (*sendRequest, error) {
+	link := h.verifyURL(m.action, m.tokenHash, m.redirect)
 	if link == "" && m.token == "" {
 		return nil, fmt.Errorf("no confirmation link and no token to send")
 	}
@@ -234,7 +244,7 @@ func (c *config) supabaseRequest(m hookMessage) (*sendRequest, error) {
 	text, bodyHTML := composeSupabaseBody(intro, link, m.token)
 
 	return &sendRequest{
-		From:    c.supabaseFrom,
+		From:    h.from,
 		To:      []string{m.to},
 		Subject: subject,
 		Text:    text,
@@ -256,6 +266,24 @@ func (s *server) queueMessage(ctx context.Context, req *sendRequest) (string, er
 	return s.submitter.submit(ctx, envelope.from.Address, envelope.recipients(), message)
 }
 
+// matchSupabaseHook returns the project whose secret verifies the signature.
+// Each Supabase project signs with its own secret, which is also what selects
+// the project URL and sender for the reply.
+func (c *config) matchSupabaseHook(id, timestamp, signatures string, body []byte, now time.Time) (supabaseHook, error) {
+	var lastErr error
+	for _, hook := range c.supabaseHooks {
+		err := verifyWebhook(hook.secret, id, timestamp, signatures, body, now)
+		if err == nil {
+			return hook, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no Supabase hook is configured")
+	}
+	return supabaseHook{}, lastErr
+}
+
 func (s *server) handleSupabaseSendEmail(w http.ResponseWriter, r *http.Request) {
 	id := requestID(r.Context())
 
@@ -271,12 +299,13 @@ func (s *server) handleSupabaseSendEmail(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	if err := verifyWebhook(s.cfg.supabaseHookSecret,
+	hook, err := s.cfg.matchSupabaseHook(
 		r.Header.Get("webhook-id"),
 		r.Header.Get("webhook-timestamp"),
 		r.Header.Get("webhook-signature"),
 		body, s.now(),
-	); err != nil {
+	)
+	if err != nil {
 		writeError(w, id, http.StatusUnauthorized, "invalid_signature", err.Error())
 		return
 	}
@@ -300,7 +329,7 @@ func (s *server) handleSupabaseSendEmail(w http.ResponseWriter, r *http.Request)
 	}
 
 	for _, m := range messages {
-		req, err := s.cfg.supabaseRequest(m)
+		req, err := hook.request(m)
 		if err != nil {
 			writeError(w, id, http.StatusUnprocessableEntity, "invalid_request", err.Error())
 			return
@@ -319,6 +348,7 @@ func (s *server) handleSupabaseSendEmail(w http.ResponseWriter, r *http.Request)
 
 	slog.Info("supabase hook accepted",
 		"id", id,
+		"project", hook.name,
 		"action", payload.EmailData.EmailActionType,
 		"messages", len(messages),
 	)

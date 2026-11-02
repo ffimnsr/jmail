@@ -60,7 +60,7 @@ func main() {
 			"domains", cfg.domains,
 			"allowed_from", cfg.allowedDomains(),
 			"send_api", cfg.token != "",
-			"supabase_hook", cfg.supabaseHookSecret != nil,
+			"supabase_hooks", len(cfg.supabaseHooks),
 			"max_bytes", cfg.maxBytes,
 			"rate", cfg.rate,
 			"log_rate", cfg.logRate,

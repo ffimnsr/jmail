@@ -41,6 +41,48 @@ func supabasePayload(action, email, token, hash string) []byte {
 		email, token, hash, action))
 }
 
+// addTestHook registers one Supabase project on c.
+func addTestHook(c *config, secret []byte, apiURL, from string) {
+	c.supabaseHooks = append(c.supabaseHooks, supabaseHook{
+		name:   "test",
+		secret: secret,
+		apiURL: apiURL,
+		from:   from,
+	})
+}
+
+// Each project signs with its own secret, and the matching one decides the
+// project URL and sender for that message.
+func TestSupabaseHookSelectsProjectBySecret(t *testing.T) {
+	fake := startFakeSMTP(t, "H00K0006")
+	cfg := testConfig(fake.addr())
+	addTestHook(cfg, []byte("secret-one"), "https://one.supabase.co", "one@example.com")
+	addTestHook(cfg, []byte("secret-two"), "https://two.supabase.co", "two@example.com")
+	srv := newTestServer(t, cfg)
+
+	body := supabasePayload("recovery", "user@example.net", "654321", "hash-two")
+	resp := postHook(t, srv, body, signWebhook([]byte("secret-two"), "msg_6", time.Now(), body))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, readBody(t, resp))
+	}
+
+	messages := fake.messages()
+	if len(messages) != 1 {
+		t.Fatalf("queued %d messages, want 1", len(messages))
+	}
+	raw := string(messages[0])
+	for _, want := range []string{"two@example.com", "two.supabase.co", "654321"} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("message does not contain %q:\n%s", want, raw)
+		}
+	}
+	for _, unwanted := range []string{"one@example.com", "one.supabase.co"} {
+		if strings.Contains(raw, unwanted) {
+			t.Errorf("message used the other project's %q:\n%s", unwanted, raw)
+		}
+	}
+}
+
 func postHook(t *testing.T, srv *httptest.Server, body []byte, headers map[string]string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, srv.URL+supabaseHookURLPath, strings.NewReader(string(body)))
@@ -152,9 +194,7 @@ func TestVerifyWebhook(t *testing.T) {
 func TestSupabaseHookQueuesEmail(t *testing.T) {
 	fake := startFakeSMTP(t, "H00K0001")
 	cfg := testConfig(fake.addr())
-	cfg.supabaseHookSecret = testHookSecret
-	cfg.supabaseURL = "https://project.supabase.co"
-	cfg.supabaseFrom = "noreply@example.com"
+	addTestHook(cfg, testHookSecret, "https://project.supabase.co", "noreply@example.com")
 	srv := newTestServer(t, cfg)
 
 	body := supabasePayload("signup", "user@example.net", "305805", "abc123hash")
@@ -178,9 +218,7 @@ func TestSupabaseHookQueuesEmail(t *testing.T) {
 func TestSupabaseHookRejectsBadSignature(t *testing.T) {
 	fake := startFakeSMTP(t, "H00K0002")
 	cfg := testConfig(fake.addr())
-	cfg.supabaseHookSecret = testHookSecret
-	cfg.supabaseURL = "https://project.supabase.co"
-	cfg.supabaseFrom = "noreply@example.com"
+	addTestHook(cfg, testHookSecret, "https://project.supabase.co", "noreply@example.com")
 	srv := newTestServer(t, cfg)
 
 	body := supabasePayload("signup", "user@example.net", "305805", "abc123hash")
@@ -211,9 +249,7 @@ func TestSupabaseHookIsNotMountedWithoutSecret(t *testing.T) {
 func TestSupabaseHookSecureEmailChangeSendsTwoEmails(t *testing.T) {
 	fake := startFakeSMTP(t, "H00K0004")
 	cfg := testConfig(fake.addr())
-	cfg.supabaseHookSecret = testHookSecret
-	cfg.supabaseURL = "https://project.supabase.co"
-	cfg.supabaseFrom = "noreply@example.com"
+	addTestHook(cfg, testHookSecret, "https://project.supabase.co", "noreply@example.com")
 	srv := newTestServer(t, cfg)
 
 	body := []byte(`{
@@ -268,8 +304,7 @@ func TestSendRouteIsNotMountedWithoutToken(t *testing.T) {
 	fake := startFakeSMTP(t, "H00K0005")
 	cfg := testConfig(fake.addr())
 	cfg.token = ""
-	cfg.supabaseHookSecret = testHookSecret
-	cfg.supabaseFrom = "noreply@example.com"
+	addTestHook(cfg, testHookSecret, "", "noreply@example.com")
 	srv := newTestServer(t, cfg)
 
 	if resp := postSend(t, srv, validBody, nil); resp.StatusCode != http.StatusNotFound {
@@ -288,16 +323,16 @@ func TestSendRouteIsNotMountedWithoutToken(t *testing.T) {
 // The link is built here because the payload only carries the site URL, not the
 // project API URL.
 func TestSupabaseVerifyURL(t *testing.T) {
-	cfg := &config{supabaseURL: "https://project.supabase.co"}
-	got := cfg.verifyURL("signup", "abc123", "https://app.example.com/welcome")
+	hook := supabaseHook{apiURL: "https://project.supabase.co"}
+	got := hook.verifyURL("signup", "abc123", "https://app.example.com/welcome")
 	want := "https://project.supabase.co/auth/v1/verify?" +
 		"redirect_to=https%3A%2F%2Fapp.example.com%2Fwelcome&token=abc123&type=signup"
 	if got != want {
 		t.Fatalf("verifyURL = %q, want %q", got, want)
 	}
 
-	cfg.supabaseURL = ""
-	if got := cfg.verifyURL("signup", "abc123", ""); got != "" {
+	hook.apiURL = ""
+	if got := hook.verifyURL("signup", "abc123", ""); got != "" {
 		t.Fatalf("verifyURL without a configured URL = %q, want empty", got)
 	}
 }

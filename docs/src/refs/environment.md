@@ -47,9 +47,10 @@ The HTTP submission API is off unless `JMAIL_HTTP_TOKEN` or `JMAIL_HTTP_SUPABASE
 | `JMAIL_HTTP_IDEMPOTENCY_TTL` | `1h` | How long an `Idempotency-Key` replay is remembered. |
 | `JMAIL_HTTP_IDEMPOTENCY_DIR` | `/var/lib/jmail-http` | Where replay records are written so they survive a restart. `off` keeps them in memory only. |
 | `JMAIL_HTTP_LOG_RATE` | `10` | Access-log lines per second, sampled with a token bucket. `0` logs every request. |
-| `JMAIL_HTTP_SUPABASE_HOOK_SECRET` | *(unset)* | Enables `POST /v1/hooks/supabase/send-email` for the Supabase Auth Send Email Hook. Accepts the dashboard's `v1,whsec_<base64>` value or a bare base64 secret. |
+| `JMAIL_HTTP_SUPABASE_HOOK_SECRET` | *(unset)* | Enables `POST /v1/hooks/supabase/send-email` for one project. Accepts the dashboard's `v1,whsec_<base64>` value or a bare base64 secret. |
 | `JMAIL_HTTP_SUPABASE_URL` | *(unset)* | Project API URL used to build confirmation links in those emails, for example `https://abcdefgh.supabase.co`. Without it the email carries only the numeric code. |
 | `JMAIL_HTTP_SUPABASE_FROM` | `noreply@JMAIL_ORIGIN` | Sender for Supabase hook emails. Must be within `JMAIL_HTTP_ALLOWED_FROM`. |
+| `JMAIL_HTTP_SUPABASE_<N>_HOOK_SECRET` | *(unset)* | A second, third, … project, with `N` from 1 to 16, and `JMAIL_HTTP_SUPABASE_<N>_URL` / `_FROM` alongside it. Each project signs with its own secret; the one that verifies selects that project's URL and sender. |
 
 ## Volumes
 
@@ -97,6 +98,7 @@ See [Customization](../advanced/customization.md).
 | `/etc/sasl2/smtpd.conf`, `/etc/syslog.conf` | Rendered on every start. |
 | `/usr/local/bin/test-mail.sh` | Generated helper that mails `JMAIL_ROOT_EMAIL`. |
 | `/usr/local/bin/jmail-http` | Static binary serving the optional HTTP API. |
+| `/usr/local/bin/jmail-http-enabled` | Succeeds when the HTTP API is configured (token or any Supabase hook secret); used by the s6 service and the health check. |
 | `/etc/jmail/postfix.d` | User overrides applied on top of the rendered `main.cf`. |
 | `/etc/jmail/init.d` | User hooks, run last by `init-mailer-config`. |
 | `/etc/postfix/ssl/.generate` | Presence triggers regeneration of the self-signed certificate on the next start. |
@@ -114,7 +116,7 @@ scripts live under `/etc/s6-overlay/s6-rc.d`:
 | `svc-opendkim` | OpenDKIM milter. |
 | `svc-saslauthd` | `saslauthd` with the `sasldb` backend. |
 | `svc-postfix` | Postfix in the foreground. |
-| `svc-jmail-http` | HTTP API. Parks itself when neither `JMAIL_HTTP_TOKEN` nor `JMAIL_HTTP_SUPABASE_HOOK_SECRET` is set, because a static s6 bundle cannot be conditional. |
+| `svc-jmail-http` | HTTP API. Parks itself when no HTTP setting is present — no token and no Supabase hook secret, numbered or not — because a static s6 bundle cannot be conditional. |
 
 s6 restarts a service whenever it exits, which is what recovers `svc-jmail-http` from a
 crash. Two details make that survivable:
@@ -137,7 +139,7 @@ extra configuration:
 
 ```
 postfix status >/dev/null 2>&1 && nc -z 127.0.0.1 587 && \
-  { [ -z "${JMAIL_HTTP_TOKEN}${JMAIL_HTTP_SUPABASE_HOOK_SECRET}" ] || nc -z 127.0.0.1 8080; }
+  { ! /usr/local/bin/jmail-http-enabled || nc -z 127.0.0.1 8080; }
 ```
 
 It runs every 30 seconds after a 30-second start period. The HTTP port is only checked

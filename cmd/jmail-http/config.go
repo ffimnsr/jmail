@@ -37,13 +37,11 @@ type config struct {
 	allowedFrom  []string
 	allowAnyFrom bool
 
-	// supabaseHookSecret enables the Supabase Auth Send Email Hook route when it
-	// is non-nil. supabaseURL is the project API URL used to build confirmation
-	// links (the payload does not carry it), and supabaseFrom is the sender all
-	// of those emails use.
-	supabaseHookSecret []byte
-	supabaseURL        string
-	supabaseFrom       string
+	// supabaseHooks enables the Supabase Auth Send Email Hook route when it is
+	// non-empty. Each entry is one Supabase project: its own signing secret, its
+	// own project API URL for confirmation links, and its own sender. A request
+	// is matched to the project whose secret verifies the signature.
+	supabaseHooks []supabaseHook
 
 	maxBytes       int64
 	maxRecipients  int
@@ -70,12 +68,9 @@ func loadConfig() (*config, error) {
 		smtpAddr: envString("JMAIL_HTTP_SMTP_ADDR", "127.0.0.1:25"),
 	}
 
-	// Fail closed: with neither a bearer token nor a Supabase hook secret there
-	// is nothing to serve. A token is not required for hook-only deployments,
-	// because that route authenticates each request with its own signature.
-	if cfg.token == "" && strings.TrimSpace(os.Getenv("JMAIL_HTTP_SUPABASE_HOOK_SECRET")) == "" {
-		return nil, fmt.Errorf("JMAIL_HTTP_TOKEN or JMAIL_HTTP_SUPABASE_HOOK_SECRET must be set; the API refuses to start with neither")
-	}
+	// Fail closed: an unauthenticated relay is an open relay. The check for
+	// "nothing to serve at all" happens after the hook secrets are read, since any
+	// Supabase project also keeps the service running.
 	if cfg.origin == "" {
 		return nil, fmt.Errorf("JMAIL_ORIGIN must be set; it defines the default allowed sending domain")
 	}
@@ -120,34 +115,79 @@ func loadConfig() (*config, error) {
 
 	cfg.allowedFrom, cfg.allowAnyFrom = parseAllowedFrom(envString("JMAIL_HTTP_ALLOWED_FROM", ""), cfg.domains)
 
-	// The Supabase hook is only routed when a secret is configured, so an
-	// installation that does not use Supabase Auth exposes nothing extra.
+	// The Supabase hook is only routed when at least one secret is configured, so
+	// an installation that does not use Supabase Auth exposes nothing extra.
+	// Unnumbered variables describe one project; JMAIL_HTTP_SUPABASE_<N>_* adds
+	// more, because each Supabase project generates its own hook secret.
 	if raw := strings.TrimSpace(os.Getenv("JMAIL_HTTP_SUPABASE_HOOK_SECRET")); raw != "" {
-		secret, err := parseWebhookSecret(raw)
+		hook, err := loadSupabaseHook(cfg, "JMAIL_HTTP_SUPABASE", raw,
+			envString("JMAIL_HTTP_SUPABASE_URL", ""),
+			envString("JMAIL_HTTP_SUPABASE_FROM", ""))
 		if err != nil {
-			return nil, fmt.Errorf("JMAIL_HTTP_SUPABASE_HOOK_SECRET: %w", err)
+			return nil, err
 		}
-		cfg.supabaseHookSecret = secret
+		cfg.supabaseHooks = append(cfg.supabaseHooks, hook)
+	}
 
-		cfg.supabaseURL = strings.TrimRight(envString("JMAIL_HTTP_SUPABASE_URL", ""), "/")
-		if cfg.supabaseURL != "" {
-			parsed, err := url.Parse(cfg.supabaseURL)
-			if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
-				return nil, fmt.Errorf("JMAIL_HTTP_SUPABASE_URL must be an http(s) URL, got %q", cfg.supabaseURL)
-			}
+	for i := 1; i <= maxSupabaseHooks; i++ {
+		prefix := fmt.Sprintf("JMAIL_HTTP_SUPABASE_%d", i)
+		raw := strings.TrimSpace(os.Getenv(prefix + "_HOOK_SECRET"))
+		if raw == "" {
+			continue
 		}
+		hook, err := loadSupabaseHook(cfg, prefix, raw,
+			envString(prefix+"_URL", ""),
+			envString(prefix+"_FROM", ""))
+		if err != nil {
+			return nil, err
+		}
+		cfg.supabaseHooks = append(cfg.supabaseHooks, hook)
+	}
 
-		cfg.supabaseFrom = envString("JMAIL_HTTP_SUPABASE_FROM", "noreply@"+cfg.origin)
-		if _, err := mail.ParseAddress(cfg.supabaseFrom); err != nil {
-			return nil, fmt.Errorf("JMAIL_HTTP_SUPABASE_FROM: %w", err)
-		}
-		if !cfg.fromAllowed(cfg.supabaseFrom) {
-			return nil, fmt.Errorf("JMAIL_HTTP_SUPABASE_FROM %q is outside the allowed sender domains %v",
-				cfg.supabaseFrom, cfg.allowedDomains())
-		}
+	// A token is not required for hook-only deployments, because that route
+	// authenticates each request with its own signature, but a service with
+	// neither has nothing to serve.
+	if cfg.token == "" && len(cfg.supabaseHooks) == 0 {
+		return nil, fmt.Errorf("JMAIL_HTTP_TOKEN or at least one JMAIL_HTTP_SUPABASE_*_HOOK_SECRET must be set; the API refuses to start with neither")
 	}
 
 	return cfg, nil
+}
+
+// maxSupabaseHooks bounds how many Supabase projects one endpoint accepts.
+// Verifying a request costs one HMAC per configured project, so this is a
+// sanity limit rather than a performance one.
+const maxSupabaseHooks = 16
+
+// loadSupabaseHook validates one project's settings. The empty sender falls back
+// to noreply@JMAIL_ORIGIN, the same default a single-project deployment gets.
+func loadSupabaseHook(cfg *config, envPrefix, rawSecret, rawURL, rawFrom string) (supabaseHook, error) {
+	secret, err := parseWebhookSecret(rawSecret)
+	if err != nil {
+		return supabaseHook{}, fmt.Errorf("%s_HOOK_SECRET: %w", envPrefix, err)
+	}
+
+	apiURL := strings.TrimRight(strings.TrimSpace(rawURL), "/")
+	if apiURL != "" {
+		parsed, err := url.Parse(apiURL)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return supabaseHook{}, fmt.Errorf("%s_URL must be an http(s) URL, got %q", envPrefix, apiURL)
+		}
+	}
+
+	from := strings.TrimSpace(rawFrom)
+	if from == "" {
+		from = "noreply@" + cfg.origin
+	}
+	if _, err := mail.ParseAddress(from); err != nil {
+		return supabaseHook{}, fmt.Errorf("%s_FROM: %w", envPrefix, err)
+	}
+	if !cfg.fromAllowed(from) {
+		return supabaseHook{}, fmt.Errorf("%s_FROM %q is outside the allowed sender domains %v",
+			envPrefix, from, cfg.allowedDomains())
+	}
+
+	return supabaseHook{name: envPrefix, secret: secret, apiURL: apiURL, from: from}, nil
 }
 
 // allowedDomains is the list used in error messages, so a rejected sender tells

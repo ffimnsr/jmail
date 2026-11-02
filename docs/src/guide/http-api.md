@@ -183,7 +183,7 @@ to an HTTP endpoint instead of sending it over SMTP. jmail implements that proto
 magic-link emails go out through the same DKIM-signed sender as the rest of your mail, and Supabase keeps no SMTP
 credentials.
 
-The route is only mounted when `JMAIL_HTTP_SUPABASE_HOOK_SECRET` is set. It does not use the bearer token, because
+The route is only mounted when at least one hook secret is set. It does not use the bearer token, because
 Supabase only sends a signature; leave `JMAIL_HTTP_TOKEN` unset entirely for a hook-only deployment and `POST
 /v1/send` stays unmounted:
 
@@ -197,12 +197,32 @@ Add `-e JMAIL_HTTP_TOKEN="$(openssl rand -hex 32)"` only if you also want `POST 
 
 | Setting | Purpose |
 | --- | --- |
-| `JMAIL_HTTP_SUPABASE_HOOK_SECRET` | Enables `POST /v1/hooks/supabase/send-email`. Supabase shows the value as `v1,whsec_...`; that form and the bare base64 secret are both accepted. |
+| `JMAIL_HTTP_SUPABASE_HOOK_SECRET` | Enables `POST /v1/hooks/supabase/send-email` for one project. Supabase shows the value as `v1,whsec_...`; that form and the bare base64 secret are both accepted. |
 | `JMAIL_HTTP_SUPABASE_URL` | Optional. Your project API URL, used to build the confirmation link. Without it the email carries only the numeric code. |
 | `JMAIL_HTTP_SUPABASE_FROM` | Optional. Sender for these emails; defaults to `noreply@JMAIL_ORIGIN` and must be an allowed sender. |
+| `JMAIL_HTTP_SUPABASE_<N>_HOOK_SECRET`, `_URL`, `_FROM` | Additional projects, `N` from 1 to 16. See [Several projects](#several-projects). |
 
 In the dashboard, open Authentication -> Hooks -> Send Email Hook, enable it, set the URL to the public HTTPS address of
 this API plus `/v1/hooks/supabase/send-email`, and copy the secret from the same page into the environment variable.
+
+### Several projects
+
+Each Supabase project generates its own hook secret, so a second project uses an indexed set of variables. The URL in
+each project's dashboard stays the same: a request is matched to the project whose secret verifies the signature, and
+that project's API URL and sender are used for the email.
+
+```sh
+-e JMAIL_HTTP_SUPABASE_1_HOOK_SECRET='v1,whsec_<one>' \
+-e JMAIL_HTTP_SUPABASE_1_URL='https://one.supabase.co' \
+-e JMAIL_HTTP_SUPABASE_1_FROM='noreply@one.example.com' \
+-e JMAIL_HTTP_SUPABASE_2_HOOK_SECRET='v1,whsec_<two>' \
+-e JMAIL_HTTP_SUPABASE_2_URL='https://two.supabase.co' \
+-e JMAIL_HTTP_SUPABASE_2_FROM='noreply@two.example.com' \
+```
+
+`N` runs from 1 to 16. The unnumbered variables above still work and can be combined with the indexed ones; each
+sender has to be within `JMAIL_HTTP_ALLOWED_FROM`. A queued email logs its project prefix, so the container log tells
+the projects apart.
 
 ### Authentication
 

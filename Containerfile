@@ -90,7 +90,12 @@ RUN set -eux; \
 
 COPY /data/s6-overlay /etc/s6-overlay
 COPY /data/templates /etc/templates
+COPY /data/bin/jmail-http-enabled /usr/local/bin/jmail-http-enabled
 COPY --from=http-build /out/jmail-http /usr/local/bin/jmail-http
+
+# COPY keeps the mode from the build context, which is not guaranteed when the
+# tree is exported from an archive rather than a git checkout.
+RUN chmod 0755 /usr/local/bin/jmail-http-enabled
 
 # Extension points, applied by init-mailer-config on every start. They exist in
 # the image so a derived image or a bind mount can drop files into them without
@@ -113,7 +118,7 @@ ENTRYPOINT ["/init"]
 # itself otherwise and the port stays closed.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD postfix status >/dev/null 2>&1 && nc -z 127.0.0.1 587 && \
-  { [ -z "${JMAIL_HTTP_TOKEN}${JMAIL_HTTP_SUPABASE_HOOK_SECRET}" ] || nc -z 127.0.0.1 8080; }
+  { ! /usr/local/bin/jmail-http-enabled || nc -z 127.0.0.1 8080; }
 
 STOPSIGNAL SIGINT
 EXPOSE 25 587 8080
