@@ -26,6 +26,8 @@ fail() {
 }
 
 command -v curl >/dev/null 2>&1 || fail "curl is required"
+command -v openssl >/dev/null 2>&1 || fail "openssl is required to verify X-Jmail-Signature"
+command -v base64 >/dev/null 2>&1 || fail "base64 is required to verify X-Jmail-Signature"
 [[ -n "$token" ]] || fail "JMAIL_TEST_HTTP_TOKEN is not set"
 
 tmp="$(mktemp -d)"
@@ -53,6 +55,19 @@ json_string() {
   grep -o "\"$1\":\"[^\"]*\"" "$tmp/body" 2>/dev/null | head -n1 | cut -d'"' -f4 || true
 }
 
+# verify_signature LABEL checks that the response just written to $tmp/body has
+# the HMAC the client can compute from JMAIL_HTTP_TOKEN. cut and tr drop the CR
+# that curl leaves on each header line.
+verify_signature() {
+  local label="$1" got expected
+  got="$(grep -i '^x-jmail-signature:' "$tmp/headers" | head -n1 | cut -d: -f2- | tr -d ' \r' || true)"
+  [[ -n "$got" ]] || fail "$label response has no X-Jmail-Signature header"
+  expected="v1,$(openssl dgst -sha256 -hmac "$token" -binary "$tmp/body" | base64 | tr -d '\r\n' || true)"
+  [[ "$got" == "$expected" ]] ||
+    fail "$label response signature does not match: got '$got', want '$expected'"
+  pass "$label response signature matches"
+}
+
 printf 'jmail HTTP API smoke test against %s\n' "$base_url"
 
 step "healthz"
@@ -65,11 +80,13 @@ step "authentication"
 call POST /v1/send '{"from":"'"$sender"'","to":["'"$receiver"'"],"subject":"no token","text":"no token"}'
 [[ "$status" == "401" ]] || fail "POST without a token returned $status, want 401: $response"
 pass "a request without a token is rejected"
+verify_signature "the 401"
 
 step "validation"
 call POST /v1/send '{"from":' -H "Authorization: Bearer $token"
 [[ "$status" == "400" ]] || fail "malformed JSON returned $status, want 400: $response"
 pass "malformed JSON is rejected"
+verify_signature "the 400"
 
 call POST /v1/send \
   '{"from":"'"$foreign_sender"'","to":["'"$receiver"'"],"subject":"foreign","text":"foreign"}' \
@@ -88,6 +105,7 @@ case "$status" in
     fail "a foreign sender returned $status: $response"
     ;;
 esac
+verify_signature "the sender policy response"
 
 step "send"
 payload='{"from":"'"$sender"'","to":["'"$receiver"'"],"subject":"jmail HTTP API test","text":"This message was sent through the HTTP API.","html":"<p>This message was sent through the HTTP API.</p>","headers":{"List-Unsubscribe":"<mailto:unsubscribe@example.com>, <https://example.com/unsubscribe?id=42>","List-Unsubscribe-Post":"List-Unsubscribe=One-Click"}}'
@@ -97,6 +115,7 @@ queue_id="$(json_string id)"
 request_id="$(json_string request_id)"
 [[ -n "$request_id" ]] || fail "the response has no request_id: $response"
 pass "queued as ${queue_id:-<Postfix returned no queue id>}"
+verify_signature "the queue response"
 
 step "idempotency"
 idempotency_key="jmail-smoke-$(date +%s)-$$"
@@ -110,6 +129,7 @@ call POST /v1/send "$payload" -H "Authorization: Bearer $token" -H "Idempotency-
 grep -qi '^idempotent-replay: true' "$tmp/headers" ||
   fail "the replay did not send Idempotent-Replay: true"
 pass "the repeated Idempotency-Key replayed the first response"
+verify_signature "the replay"
 
 printf '\nPassed\n'
 printf 'Queue id:   %s\n' "${queue_id:-<none>}"

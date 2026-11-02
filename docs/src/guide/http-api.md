@@ -176,6 +176,28 @@ Errors are JSON: `{"request_id": "...", "error": {"code": "...", "message": "...
 A `4xx` means nothing was sent. A `502` may still have queued the message if the
 connection failed after `DATA`; when that matters, send an `Idempotency-Key`.
 
+### Response signature
+
+Every response from `POST /v1/send`, including `401`, `422` and the idempotent
+replay, carries `X-Jmail-Signature: v1,<base64>`. The value is HMAC-SHA256 over
+the exact response body bytes, keyed with the configured `JMAIL_HTTP_TOKEN`, so a
+client can verify a reply with the same credential it used for the request:
+
+```python
+import base64, hashlib, hmac, os
+
+expected = "v1," + base64.b64encode(
+    hmac.new(os.environ["JMAIL_HTTP_TOKEN"].encode(), body, hashlib.sha256).digest()
+).decode()
+if not hmac.compare_digest(response.headers["X-Jmail-Signature"], expected):
+    raise RuntimeError("response signature does not match")
+```
+
+Compare in constant time. Only the body is covered, not the status line or other
+headers, so a proxy that rewrites those is not detected. The signature proves the
+body came from a holder of the token; it does not replace TLS, which still
+protects the bearer token and the mail contents in transit.
+
 ## Supabase Auth email hook
 
 Supabase Auth can [delegate its authentication email](https://supabase.com/docs/guides/auth/auth-hooks/send-email-hook)
@@ -315,7 +337,8 @@ sensible behind a TLS terminator.
 
 `test-http.sh` in the repository root walks the checks above with curl: health, a
 missing token, malformed JSON, the sender policy, a real send, and an idempotent
-replay. It exits non-zero on the first failure, so it works as a gate.
+replay, plus the `X-Jmail-Signature` on each `/v1/send` response. It exits
+non-zero on the first failure, so it works as a gate.
 
 ```sh
 JMAIL_TEST_HTTP_TOKEN=<token> ./test-http.sh

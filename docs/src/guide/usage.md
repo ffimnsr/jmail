@@ -64,9 +64,10 @@ connecting. `mk send-test-mail` runs it from the repository, and `./scripts/chec
 decide whether the message authenticates.
 
 `test-http.sh` does the same over the optional HTTP API, using curl: it checks health, a missing token, malformed
-JSON, the sender policy, a real send, and an idempotent replay, and exits non-zero on the first failure. It reads
-`JMAIL_TEST_HTTP_SERVER`, `JMAIL_TEST_HTTP_PORT` and `JMAIL_TEST_HTTP_TOKEN`. `mk test-http` runs it against the dev
-container; see [HTTP API](http-api.md).
+JSON, the sender policy, a real send, and an idempotent replay, verifies `X-Jmail-Signature` on each `/v1/send`
+response, and exits non-zero on the first failure. It reads `JMAIL_TEST_HTTP_SERVER`, `JMAIL_TEST_HTTP_PORT`,
+`JMAIL_TEST_HTTP_TOKEN`, `JMAIL_TEST_SENDER` and `JMAIL_TEST_RECEIVER`, and needs `openssl` and `base64` for the
+signature check. `mk test-http` runs it against the dev container; see [HTTP API](http-api.md).
 
 ## TLS
 

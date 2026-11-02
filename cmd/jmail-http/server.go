@@ -60,9 +60,11 @@ func (s *server) routes() http.Handler {
 	// send token; it reveals nothing beyond "the process is serving".
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	// Without a bearer token the send route is not mounted at all, so a
-	// hook-only deployment cannot be used as an unauthenticated relay.
+	// hook-only deployment cannot be used as an unauthenticated relay. The
+	// signature wraps authentication too, so a 401 is verifiable as well.
 	if s.cfg.token != "" {
-		mux.Handle("POST /v1/send", s.authenticate(http.HandlerFunc(s.handleSend)))
+		send := s.authenticate(http.HandlerFunc(s.handleSend))
+		mux.Handle("POST /v1/send", signResponses([]byte(s.cfg.token), send))
 	}
 	// Supabase Auth signs with Standard Webhooks instead of the bearer token, so
 	// this route authenticates the request itself. It is not mounted unless a
