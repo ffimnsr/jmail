@@ -1,7 +1,7 @@
 # HTTP API
 
 jmail can also accept messages over HTTP. The API is **off by default** and only
-starts when `JMAIL_HTTP_TOKEN` is set.
+starts when `JMAIL_HTTP_TOKEN` or `JMAIL_HTTP_SUPABASE_HOOK_SECRET` is set.
 
 It is worth enabling when the client cannot open an outbound SMTP connection, for
 example a serverless function, an edge runtime, a CI job, or a provider that
@@ -28,7 +28,9 @@ podman run -d --name jmail \
 ```
 
 The credential is deliberately separate from `JMAIL_SMTP_PASSWORD`: it is sent as a
-bearer token on every request, so it should be rotatable on its own.
+bearer token on every request, so it should be rotatable on its own. If you only need the
+Supabase hook, leave `JMAIL_HTTP_TOKEN` unset: the service still starts, `POST /v1/send`
+is not mounted, and `GET /healthz` is all that remains of the public API.
 
 There is no TLS listener. Terminate TLS in front of the container, with Caddy,
 Traefik or nginx, and publish the API only where it needs to be reachable. The
@@ -173,6 +175,93 @@ Errors are JSON: `{"request_id": "...", "error": {"code": "...", "message": "...
 
 A `4xx` means nothing was sent. A `502` may still have queued the message if the
 connection failed after `DATA`; when that matters, send an `Idempotency-Key`.
+
+## Supabase Auth email hook
+
+Supabase Auth can [delegate its authentication email](https://supabase.com/docs/guides/auth/auth-hooks/send-email-hook)
+to an HTTP endpoint instead of sending it over SMTP. jmail implements that protocol, so signup, recovery, invite and
+magic-link emails go out through the same DKIM-signed sender as the rest of your mail, and Supabase keeps no SMTP
+credentials.
+
+The route is only mounted when `JMAIL_HTTP_SUPABASE_HOOK_SECRET` is set. It does not use the bearer token, because
+Supabase only sends a signature; leave `JMAIL_HTTP_TOKEN` unset entirely for a hook-only deployment and `POST
+/v1/send` stays unmounted:
+
+```sh
+-e JMAIL_HTTP_SUPABASE_HOOK_SECRET='v1,whsec_<base64 secret from the dashboard>' \
+-e JMAIL_HTTP_SUPABASE_URL='https://<project-ref>.supabase.co' \
+-e JMAIL_HTTP_SUPABASE_FROM='noreply@example.com' \
+```
+
+Add `-e JMAIL_HTTP_TOKEN="$(openssl rand -hex 32)"` only if you also want `POST /v1/send`.
+
+| Setting | Purpose |
+| --- | --- |
+| `JMAIL_HTTP_SUPABASE_HOOK_SECRET` | Enables `POST /v1/hooks/supabase/send-email`. Supabase shows the value as `v1,whsec_...`; that form and the bare base64 secret are both accepted. |
+| `JMAIL_HTTP_SUPABASE_URL` | Optional. Your project API URL, used to build the confirmation link. Without it the email carries only the numeric code. |
+| `JMAIL_HTTP_SUPABASE_FROM` | Optional. Sender for these emails; defaults to `noreply@JMAIL_ORIGIN` and must be an allowed sender. |
+
+In the dashboard, open Authentication -> Hooks -> Send Email Hook, enable it, set the URL to the public HTTPS address of
+this API plus `/v1/hooks/supabase/send-email`, and copy the secret from the same page into the environment variable.
+
+### Authentication
+
+The endpoint does not use the bearer token, because Supabase cannot send one. Each request is signed with
+[Standard Webhooks](https://www.standardwebhooks.com/): HMAC-SHA256 over `<webhook-id>.<webhook-timestamp>.<body>`,
+carried in the `webhook-id`, `webhook-timestamp` and `webhook-signature` headers. A missing or wrong signature, a body
+that does not match it, or a timestamp more than five minutes from the server clock is rejected with
+`401 invalid_signature`; the timestamp window is what bounds replay of a captured request.
+
+### What it sends
+
+The subject and body are generated from `email_data.email_action_type`: signup, recovery, invite, magiclink,
+email_change and reauthentication each get their own wording. The body contains the confirmation link when
+`JMAIL_HTTP_SUPABASE_URL` is set, plus the numeric code from the payload as a fallback.
+
+With Secure Email Change enabled Supabase sends two hashes, and its field names are reversed: `token_hash_new` belongs
+to the current address and `token_hash` to the new one. Two messages are queued, each with the code for its recipient.
+
+Every message is queued before the endpoint answers `200 {}`, so Supabase retries a delivery that failed. It is not
+de-duplicated by `webhook-id`, so a retry after a lost `200` can send the same email twice.
+
+### Behind a tunnel or reverse proxy
+
+Supabase needs a public HTTPS URL, but the API speaks plain HTTP. A Cloudflare Tunnel is a good fit: `cloudflared` dials
+out, so no inbound port has to be opened and the API can stay on the loopback interface.
+
+Keep the container's port on loopback and point the tunnel at the published host port. The installer defaults to
+`127.0.0.1` with host port `8080`, `scripts/quadlet.sh` uses `10808`, and `JMAIL_HTTP_PUBLISH_PORT` in `jmail.env`
+records yours:
+
+```yaml
+# /etc/cloudflared/config.yml
+tunnel: jmail
+credentials-file: /etc/cloudflared/<tunnel-id>.json
+ingress:
+  - hostname: hooks.example.com
+    service: http://127.0.0.1:<published port>
+  - service: http_status:404
+```
+
+```sh
+cloudflared tunnel route dns jmail hooks.example.com
+sudo systemctl enable --now cloudflared
+```
+
+Then use `https://hooks.example.com/v1/hooks/supabase/send-email` in Supabase. Two things break the signature check when
+they are wrong:
+
+- The body has to reach the container unchanged, because the signature covers it. Cloudflare does not rewrite bodies,
+  but a Worker or Transform Rule on that hostname would.
+- `webhook-timestamp` must be within five minutes of the server clock, so keep NTP running on the host.
+
+Edge features that challenge or block requests are the usual reason Supabase keeps retrying: leave the hook hostname
+out of Cloudflare Access, turn off Bot Fight Mode, managed challenges and "Under Attack" for it, and skip WAF managed
+rules for `POST /v1/hooks/supabase/send-email`. The signature is the authentication — a request without a valid one is
+refused with `401` — so the endpoint does not need to be hidden.
+
+If you also serve `POST /v1/send` through the same tunnel, protect it with its bearer token as usual, or with a
+Cloudflare Access service token, and exclude the hook path from that policy: Supabase cannot send an Access token.
 
 ## `GET /healthz`
 

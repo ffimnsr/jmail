@@ -59,7 +59,17 @@ func (s *server) routes() http.Handler {
 	// /healthz is unauthenticated so a container health check does not need the
 	// send token; it reveals nothing beyond "the process is serving".
 	mux.HandleFunc("GET /healthz", s.handleHealth)
-	mux.Handle("POST /v1/send", s.authenticate(http.HandlerFunc(s.handleSend)))
+	// Without a bearer token the send route is not mounted at all, so a
+	// hook-only deployment cannot be used as an unauthenticated relay.
+	if s.cfg.token != "" {
+		mux.Handle("POST /v1/send", s.authenticate(http.HandlerFunc(s.handleSend)))
+	}
+	// Supabase Auth signs with Standard Webhooks instead of the bearer token, so
+	// this route authenticates the request itself. It is not mounted unless a
+	// secret is configured.
+	if s.cfg.supabaseHookSecret != nil {
+		mux.HandleFunc(supabaseHookPattern, s.handleSupabaseSendEmail)
+	}
 	return s.instrument(mux)
 }
 

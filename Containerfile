@@ -113,7 +113,7 @@ ENTRYPOINT ["/init"]
 # itself otherwise and the port stays closed.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD postfix status >/dev/null 2>&1 && nc -z 127.0.0.1 587 && \
-  { [ -z "${JMAIL_HTTP_TOKEN}" ] || nc -z 127.0.0.1 8080; }
+  { [ -z "${JMAIL_HTTP_TOKEN}${JMAIL_HTTP_SUPABASE_HOOK_SECRET}" ] || nc -z 127.0.0.1 8080; }
 
 STOPSIGNAL SIGINT
 EXPOSE 25 587 8080

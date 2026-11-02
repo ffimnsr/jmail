@@ -13,6 +13,7 @@ and it relays your messages to the destination mail server.
 - Outgoing mail signed with DKIM, for one domain or several.
 - Self-signed TLS certificate generated on first boot, easy to replace with your own.
 - Configuration driven by environment variables and templates, so you can reconfigure without rebuilding.
+- Optional HTTP API, including a receiver for Supabase Auth's Send Email Hook.
 - Multi-arch images for `linux/amd64` and `linux/arm64`.
 
 ## Documentation

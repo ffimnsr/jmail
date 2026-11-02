@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"fmt"
 	"testing"
 )
@@ -56,4 +57,95 @@ func TestAllowedFromDefaultsToEverySigningDomain(t *testing.T) {
 	if cfg.fromAllowed("sender@third.example") {
 		t.Error("sender@third.example is not signed, so it should be rejected")
 	}
+}
+
+// The hook is off unless a secret is configured, and a misconfigured sender is a
+// startup error rather than a surprise on the first signup.
+func TestSupabaseHookConfig(t *testing.T) {
+	t.Run("disabled without a secret", func(t *testing.T) {
+		t.Setenv("JMAIL_HTTP_TOKEN", "0123456789abcdef0123456789abcdef")
+		t.Setenv("JMAIL_ORIGIN", "example.com")
+		t.Setenv("JMAIL_HTTP_SUPABASE_HOOK_SECRET", "")
+
+		cfg, err := loadConfig()
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		if cfg.supabaseHookSecret != nil {
+			t.Fatal("the hook should be disabled when no secret is set")
+		}
+	})
+
+	t.Run("secret and defaults", func(t *testing.T) {
+		secret := base64.StdEncoding.EncodeToString([]byte("hook-secret-bytes"))
+		t.Setenv("JMAIL_HTTP_TOKEN", "0123456789abcdef0123456789abcdef")
+		t.Setenv("JMAIL_ORIGIN", "example.com")
+		t.Setenv("JMAIL_HTTP_SUPABASE_HOOK_SECRET", "v1,whsec_"+secret)
+		t.Setenv("JMAIL_HTTP_SUPABASE_URL", "https://project.supabase.co/")
+		t.Setenv("JMAIL_HTTP_SUPABASE_FROM", "")
+
+		cfg, err := loadConfig()
+		if err != nil {
+			t.Fatalf("loadConfig: %v", err)
+		}
+		if got, want := string(cfg.supabaseHookSecret), "hook-secret-bytes"; got != want {
+			t.Errorf("secret = %q, want %q", got, want)
+		}
+		if got, want := cfg.supabaseURL, "https://project.supabase.co"; got != want {
+			t.Errorf("url = %q, want %q (trailing slash trimmed)", got, want)
+		}
+		if got, want := cfg.supabaseFrom, "noreply@example.com"; got != want {
+			t.Errorf("from = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("hook secret works without a bearer token", func(t *testing.T) {
+		secret := base64.StdEncoding.EncodeToString([]byte("hook-secret-bytes"))
+		t.Setenv("JMAIL_HTTP_TOKEN", "")
+		t.Setenv("JMAIL_ORIGIN", "example.com")
+		t.Setenv("JMAIL_HTTP_SUPABASE_HOOK_SECRET", "v1,whsec_"+secret)
+
+		cfg, err := loadConfig()
+		if err != nil {
+			t.Fatalf("a hook-only deployment should start: %v", err)
+		}
+		if cfg.token != "" {
+			t.Errorf("token = %q, want empty", cfg.token)
+		}
+		if cfg.supabaseHookSecret == nil {
+			t.Fatal("the hook should be enabled")
+		}
+	})
+
+	t.Run("neither a token nor a hook secret", func(t *testing.T) {
+		t.Setenv("JMAIL_HTTP_TOKEN", "")
+		t.Setenv("JMAIL_ORIGIN", "example.com")
+		t.Setenv("JMAIL_HTTP_SUPABASE_HOOK_SECRET", "")
+
+		if _, err := loadConfig(); err == nil {
+			t.Fatal("a service with nothing to serve should refuse to start")
+		}
+	})
+
+	t.Run("rejects an unsigned sender", func(t *testing.T) {
+		secret := base64.StdEncoding.EncodeToString([]byte("hook-secret-bytes"))
+		t.Setenv("JMAIL_HTTP_TOKEN", "0123456789abcdef0123456789abcdef")
+		t.Setenv("JMAIL_ORIGIN", "example.com")
+		t.Setenv("JMAIL_HTTP_SUPABASE_HOOK_SECRET", "v1,whsec_"+secret)
+		t.Setenv("JMAIL_HTTP_SUPABASE_FROM", "noreply@elsewhere.example")
+
+		if _, err := loadConfig(); err == nil {
+			t.Fatal("a sender outside the signing domains should fail at startup")
+		}
+	})
+
+	t.Run("rejects a non-base64 secret", func(t *testing.T) {
+		t.Setenv("JMAIL_HTTP_TOKEN", "0123456789abcdef0123456789abcdef")
+		t.Setenv("JMAIL_ORIGIN", "example.com")
+		t.Setenv("JMAIL_HTTP_SUPABASE_HOOK_SECRET", "not base64!")
+
+		if _, err := loadConfig(); err == nil {
+			t.Fatal("an unparseable secret should fail at startup")
+		}
+	})
 }

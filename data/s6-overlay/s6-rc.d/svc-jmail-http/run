@@ -1,10 +1,10 @@
 #!/usr/bin/with-contenv bash
 
-# The HTTP API is opt-in: JMAIL_HTTP_TOKEN is the switch. s6 restarts a longrun
-# whenever it exits and the bundle is static, so an unset token parks here
-# instead of turning into a restart loop.
-if [[ -z "${JMAIL_HTTP_TOKEN}" ]]; then
-  echo "jmail-http: disabled, set JMAIL_HTTP_TOKEN to enable the HTTP API"
+# The HTTP API is opt-in: JMAIL_HTTP_TOKEN or the Supabase hook secret is the
+# switch. s6 restarts a longrun whenever it exits and the bundle is static, so
+# an unconfigured service parks here instead of turning into a restart loop.
+if [[ -z "${JMAIL_HTTP_TOKEN}" && -z "${JMAIL_HTTP_SUPABASE_HOOK_SECRET}" ]]; then
+  echo "jmail-http: disabled, set JMAIL_HTTP_TOKEN or JMAIL_HTTP_SUPABASE_HOOK_SECRET to enable the HTTP API"
   exec tail -f /dev/null
 fi
 

@@ -5,7 +5,8 @@ jmail is a simple and lightweight mail server in a container. It's an SMTP-only 
 ## Features
 - Send SMTP mails for development and production use.
 - Outgoing emails signed with DKIM.
-- Optional HTTP API for clients that cannot open an outbound SMTP connection.
+- Optional HTTP API for clients that cannot open an outbound SMTP connection, including a Supabase Auth email hook
+  receiver.
 - Lightweight, customizable and built with security in mind.
 
 ## Installation
@@ -113,7 +114,10 @@ allowed for authenticated clients and for the networks in `JMAIL_MYNETWORKS`, wh
 ### HTTP API (optional)
 
 If a client cannot reach port `587`, for example a serverless function or a provider that blocks SMTP egress, the
-container can also accept messages over HTTP. It is off until you set a token:
+container can also accept messages over HTTP. It is off until you set a token or the Supabase hook secret. The same
+listener also implements the
+[Supabase Auth Send Email Hook](docs/src/guide/http-api.md#supabase-auth-email-hook), so Supabase can send its
+authentication email without SMTP credentials:
 
 ```sh
 podman run -d --name jmail \

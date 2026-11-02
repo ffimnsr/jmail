@@ -22,7 +22,7 @@ func main() {
 		slog.Error("invalid configuration", "error", err)
 		os.Exit(1)
 	}
-	if len(cfg.token) < 24 {
+	if len(cfg.token) > 0 && len(cfg.token) < 24 {
 		slog.Warn("JMAIL_HTTP_TOKEN is short; use at least 32 random bytes, for example `openssl rand -hex 32`",
 			"length", len(cfg.token))
 	}
@@ -59,6 +59,8 @@ func main() {
 			"origin", cfg.origin,
 			"domains", cfg.domains,
 			"allowed_from", cfg.allowedDomains(),
+			"send_api", cfg.token != "",
+			"supabase_hook", cfg.supabaseHookSecret != nil,
 			"max_bytes", cfg.maxBytes,
 			"rate", cfg.rate,
 			"log_rate", cfg.logRate,

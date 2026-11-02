@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"net/mail"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -35,6 +37,14 @@ type config struct {
 	allowedFrom  []string
 	allowAnyFrom bool
 
+	// supabaseHookSecret enables the Supabase Auth Send Email Hook route when it
+	// is non-nil. supabaseURL is the project API URL used to build confirmation
+	// links (the payload does not carry it), and supabaseFrom is the sender all
+	// of those emails use.
+	supabaseHookSecret []byte
+	supabaseURL        string
+	supabaseFrom       string
+
 	maxBytes       int64
 	maxRecipients  int
 	maxAttachments int
@@ -60,9 +70,11 @@ func loadConfig() (*config, error) {
 		smtpAddr: envString("JMAIL_HTTP_SMTP_ADDR", "127.0.0.1:25"),
 	}
 
-	// Fail closed: an unauthenticated relay is an open relay.
-	if cfg.token == "" {
-		return nil, fmt.Errorf("JMAIL_HTTP_TOKEN must be set; the API refuses to start without a bearer token")
+	// Fail closed: with neither a bearer token nor a Supabase hook secret there
+	// is nothing to serve. A token is not required for hook-only deployments,
+	// because that route authenticates each request with its own signature.
+	if cfg.token == "" && strings.TrimSpace(os.Getenv("JMAIL_HTTP_SUPABASE_HOOK_SECRET")) == "" {
+		return nil, fmt.Errorf("JMAIL_HTTP_TOKEN or JMAIL_HTTP_SUPABASE_HOOK_SECRET must be set; the API refuses to start with neither")
 	}
 	if cfg.origin == "" {
 		return nil, fmt.Errorf("JMAIL_ORIGIN must be set; it defines the default allowed sending domain")
@@ -107,6 +119,34 @@ func loadConfig() (*config, error) {
 	}
 
 	cfg.allowedFrom, cfg.allowAnyFrom = parseAllowedFrom(envString("JMAIL_HTTP_ALLOWED_FROM", ""), cfg.domains)
+
+	// The Supabase hook is only routed when a secret is configured, so an
+	// installation that does not use Supabase Auth exposes nothing extra.
+	if raw := strings.TrimSpace(os.Getenv("JMAIL_HTTP_SUPABASE_HOOK_SECRET")); raw != "" {
+		secret, err := parseWebhookSecret(raw)
+		if err != nil {
+			return nil, fmt.Errorf("JMAIL_HTTP_SUPABASE_HOOK_SECRET: %w", err)
+		}
+		cfg.supabaseHookSecret = secret
+
+		cfg.supabaseURL = strings.TrimRight(envString("JMAIL_HTTP_SUPABASE_URL", ""), "/")
+		if cfg.supabaseURL != "" {
+			parsed, err := url.Parse(cfg.supabaseURL)
+			if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+				return nil, fmt.Errorf("JMAIL_HTTP_SUPABASE_URL must be an http(s) URL, got %q", cfg.supabaseURL)
+			}
+		}
+
+		cfg.supabaseFrom = envString("JMAIL_HTTP_SUPABASE_FROM", "noreply@"+cfg.origin)
+		if _, err := mail.ParseAddress(cfg.supabaseFrom); err != nil {
+			return nil, fmt.Errorf("JMAIL_HTTP_SUPABASE_FROM: %w", err)
+		}
+		if !cfg.fromAllowed(cfg.supabaseFrom) {
+			return nil, fmt.Errorf("JMAIL_HTTP_SUPABASE_FROM %q is outside the allowed sender domains %v",
+				cfg.supabaseFrom, cfg.allowedDomains())
+		}
+	}
+
 	return cfg, nil
 }
 

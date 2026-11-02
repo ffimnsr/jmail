@@ -27,12 +27,12 @@ All variables are read when the container starts. Changing them on an existing c
 
 ## HTTP API variables
 
-The HTTP submission API is off unless `JMAIL_HTTP_TOKEN` is set. See
+The HTTP submission API is off unless `JMAIL_HTTP_TOKEN` or `JMAIL_HTTP_SUPABASE_HOOK_SECRET` is set. See
 [HTTP API](../guide/http-api.md).
 
 | Variable | Default | Used for |
 | --- | --- | --- |
-| `JMAIL_HTTP_TOKEN` | *(unset)* | Bearer token for `POST /v1/send`. Empty means the API stays disabled. Use `openssl rand -hex 32`. |
+| `JMAIL_HTTP_TOKEN` | *(unset)* | Bearer token for `POST /v1/send`. Empty means that route is not mounted, which is the right choice when the service only receives the Supabase hook. Use `openssl rand -hex 32`. |
 | `JMAIL_HTTP_LISTEN` | `0.0.0.0:8080` | Listen address inside the container. |
 | `JMAIL_HTTP_ALLOWED_FROM` | `JMAIL_DOMAINS` | Space or comma separated sender domains. `*` accepts any sender, which does **not** make them DKIM-signed. |
 | `JMAIL_HTTP_SMTP_ADDR` | `127.0.0.1:25` | Where the service hands the message to Postfix. Loopback is trusted through `mynetworks`. |
@@ -47,6 +47,9 @@ The HTTP submission API is off unless `JMAIL_HTTP_TOKEN` is set. See
 | `JMAIL_HTTP_IDEMPOTENCY_TTL` | `1h` | How long an `Idempotency-Key` replay is remembered. |
 | `JMAIL_HTTP_IDEMPOTENCY_DIR` | `/var/lib/jmail-http` | Where replay records are written so they survive a restart. `off` keeps them in memory only. |
 | `JMAIL_HTTP_LOG_RATE` | `10` | Access-log lines per second, sampled with a token bucket. `0` logs every request. |
+| `JMAIL_HTTP_SUPABASE_HOOK_SECRET` | *(unset)* | Enables `POST /v1/hooks/supabase/send-email` for the Supabase Auth Send Email Hook. Accepts the dashboard's `v1,whsec_<base64>` value or a bare base64 secret. |
+| `JMAIL_HTTP_SUPABASE_URL` | *(unset)* | Project API URL used to build confirmation links in those emails, for example `https://abcdefgh.supabase.co`. Without it the email carries only the numeric code. |
+| `JMAIL_HTTP_SUPABASE_FROM` | `noreply@JMAIL_ORIGIN` | Sender for Supabase hook emails. Must be within `JMAIL_HTTP_ALLOWED_FROM`. |
 
 ## Volumes
 
@@ -81,7 +84,7 @@ See [Customization](../advanced/customization.md).
 | --- | --- |
 | `25` | SMTP in front of postscreen. |
 | `587` | Submission with STARTTLS and SASL authentication (declared with `EXPOSE`). |
-| `8080` | HTTP API, plain HTTP, only serving when `JMAIL_HTTP_TOKEN` is set. |
+| `8080` | HTTP API, plain HTTP, serving when `JMAIL_HTTP_TOKEN` or `JMAIL_HTTP_SUPABASE_HOOK_SECRET` is set. |
 | `8892` | OpenDKIM milter socket, bound to `127.0.0.1` only. |
 
 ## Files in the image
@@ -111,7 +114,7 @@ scripts live under `/etc/s6-overlay/s6-rc.d`:
 | `svc-opendkim` | OpenDKIM milter. |
 | `svc-saslauthd` | `saslauthd` with the `sasldb` backend. |
 | `svc-postfix` | Postfix in the foreground. |
-| `svc-jmail-http` | HTTP submission API. Parks itself when `JMAIL_HTTP_TOKEN` is unset, because a static s6 bundle cannot be conditional. |
+| `svc-jmail-http` | HTTP API. Parks itself when neither `JMAIL_HTTP_TOKEN` nor `JMAIL_HTTP_SUPABASE_HOOK_SECRET` is set, because a static s6 bundle cannot be conditional. |
 
 s6 restarts a service whenever it exits, which is what recovers `svc-jmail-http` from a
 crash. Two details make that survivable:
@@ -134,7 +137,7 @@ extra configuration:
 
 ```
 postfix status >/dev/null 2>&1 && nc -z 127.0.0.1 587 && \
-  { [ -z "${JMAIL_HTTP_TOKEN}" ] || nc -z 127.0.0.1 8080; }
+  { [ -z "${JMAIL_HTTP_TOKEN}${JMAIL_HTTP_SUPABASE_HOOK_SECRET}" ] || nc -z 127.0.0.1 8080; }
 ```
 
 It runs every 30 seconds after a 30-second start period. The HTTP port is only checked
