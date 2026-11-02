@@ -167,11 +167,12 @@ side, so passing a local test send is not enough.
 - [ ] **No `MX` record is needed.** jmail is outbound-only: it does not accept inbound mail, so an MX record would
       only advertise a service this container does not run. If the domain already has a null MX (`v=MX:0 .`), leave
       it alone.
-- [ ] `DKIM` — publish the record printed at startup, once per domain in `JMAIL_DOMAINS`, at
-      `sendonly._domainkey.<domain>`. It is also written to
-      `/etc/opendkim/keys/<domain>/sendonly.txt`, which you can read from the running container with
-      `podman exec jmail sh -c 'cat /etc/opendkim/keys/example.com/sendonly.txt'`. A 2048-bit key produces
-      roughly 400 characters, which has to stay split into quoted 255-character strings on one line.
+- [ ] `DKIM` — publish the record at `sendonly._domainkey.<domain>`, once per domain in `JMAIL_DOMAINS`. The
+      installer prints it as a single unquoted value, and it is also written to
+      `/etc/opendkim/keys/<domain>/sendonly.txt` inside the container. A 2048-bit key produces roughly 400
+      characters; paste them as one TXT value with no quotation marks, and let your DNS provider split the value into
+      255-character strings on the wire. Quotes pasted in from a BIND-style record are stored as data and break the
+      key.
 - [ ] `SPF` — on every domain you send `From:`, which for this image means each domain in `JMAIL_DOMAINS`:
       ```
       v=spf1 a:<mail-server-hostname> ip4:<server-ip> -all

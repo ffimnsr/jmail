@@ -178,9 +178,10 @@ sending domain (single or multiple), the SMTP credentials, the submission port, 
 and whether it should also accept a bearer token, and how many Supabase Auth hook projects to configure. It writes the
 quadlet to `~/.config/containers/systemd/jmail.container` and the environment file to
 `~/.config/jmail/jmail.env`, then starts `jmail.service` with `systemctl --user`. At the end it prints the SMTP
-credentials, the generated HTTP API token (33 characters) when one was requested, and the DKIM, SPF and DMARC
-records to publish for every signing domain. The installer keeps the data under `~/.local/share/jmail` and reads the
-environment file back on the next run, so re-running it changes settings instead of starting over.
+credentials, the generated HTTP API token (33 characters) when one was requested, each Supabase project's sender and
+API URL, and the DKIM, SPF and DMARC values to publish for every signing domain, followed by a BIND snippet per zone
+with all three records for providers that import zones. The installer keeps the data under `~/.local/share/jmail` and
+reads the environment file back, so re-running it changes settings instead of starting over.
 
 The environment file also holds the installer's own settings (`JMAIL_IMAGE`, `JMAIL_PUBLISH_PORT`,
 `JMAIL_HTTP_PUBLISH_BIND`, `JMAIL_HTTP_PUBLISH_PORT`) and the Supabase hook projects

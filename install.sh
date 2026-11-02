@@ -1018,7 +1018,17 @@ main() {
     printf '  HTTP API   : disabled\n' >&2
   fi
   if ((sb_count > 0)); then
+    local project project_from project_url
     printf '  Supabase   : %s project(s)\n' "$sb_count" >&2
+    for ((i = 0; i < sb_count; i++)); do
+      project=$((i + 1))
+      project_from="${sb_from[i]:-}"
+      project_url="${sb_url[i]:-}"
+      [[ -n "$project_from" ]] || project_from="noreply@$origin (default)"
+      [[ -n "$project_url" ]] || project_url="unset (code-only emails, no links)"
+      printf '    %-9s : from %s\n' "project $project" "$project_from" >&2
+      printf '    %-9s   url  %s\n' "" "$project_url" >&2
+    done
   fi
   printf '  data dir   : %s\n\n' "$DATA_DIR" >&2
 
@@ -1236,26 +1246,75 @@ print_summary() {
   fi
 
   printf 'DNS records to publish\n'
-  printf '======================\n\n'
-  for domain in "$origin" ${extra_domains//,/ }; do
+  printf '======================\n'
+  printf 'Publish each value as a single TXT value; do not include the quotes.\n\n'
+  local -a domains=() dkim_values=()
+  local dkim_ready idx
+  domains=("$origin")
+  for domain in ${extra_domains//,/ }; do
+    domains+=("$domain")
+  done
+  for domain in "${domains[@]}"; do
+    dkim_record=""
+    dkim_ready=0
+    if ((READ_DKIM)) && dkim_record="$(read_dkim_record "$domain")"; then
+      dkim_ready=1
+    fi
+    dkim_values+=("$dkim_record")
     printf '%s\n' "$domain"
     printf '  DKIM   sendonly._domainkey.%s  TXT\n' "$domain"
-    if ((READ_DKIM)) && dkim_record="$(read_dkim_record "$domain")"; then
-      printf '%s\n' "$dkim_record" | sed 's/^/         /'
+    if ((dkim_ready)); then
+      printf '         %s\n' "$dkim_record"
     else
       printf '         Generated on the first start. Read it with:\n'
       printf '           podman exec %s cat /etc/opendkim/keys/%s/sendonly.txt\n' "$UNIT_NAME" "$domain"
+      printf '         then join the quoted chunks into one value, without the quotes.\n'
     fi
-    printf '  SPF    %s  TXT  "v=spf1 a:%s -all"\n' "$domain" "$hostname"
-    printf '  DMARC  _dmarc.%s  TXT  "v=DMARC1; p=none; rua=mailto:dmarc@%s"\n\n' "$domain" "$domain"
+    printf '  SPF    %s  TXT\n         v=spf1 a:%s -all\n' "$domain" "$hostname"
+    printf '  DMARC  _dmarc.%s  TXT\n         v=DMARC1; p=none; rua=mailto:dmarc@%s\n\n' "$domain" "$domain"
   done
   printf 'No MX record is needed: jmail is outbound-only.\n'
   printf 'SPF uses the A record of %s; add ip4:<server-ip> if that is not the sending address.\n' "$hostname"
   printf 'Also point the PTR record of this server at %s.\n' "$hostname"
   printf 'Tighten DMARC to p=reject once the reports look clean.\n\n'
 
+  # A zone import adds records rather than editing them in place, so say what
+  # to remove first: a second TXT at the same name breaks SPF and DMARC.
+  printf 'Import into Cloudflare (DNS -> Records -> Import, one zone at a time)\n'
+  printf '%s\n' '---------------------------------------------------------------------'
+  for idx in "${!domains[@]}"; do
+    domain="${domains[idx]}"
+    printf '; %s\n' "$domain"
+    printf '@ IN TXT "v=spf1 a:%s -all"\n' "$hostname"
+    if [[ -n "${dkim_values[idx]}" ]]; then
+      printf 'sendonly._domainkey IN TXT "%s"\n' "${dkim_values[idx]}"
+    else
+      printf '; sendonly._domainkey IN TXT "<read from the container after first start>"\n'
+    fi
+    printf '_dmarc IN TXT "v=DMARC1; p=none; rua=mailto:dmarc@%s"\n\n' "$domain"
+  done
+  printf 'Remove any existing record with the same name and type before importing:\n'
+  printf 'a second TXT value at the same name breaks SPF and DMARC.\n\n'
+
   printf 'Logs: journalctl --user -u jmail -f   (or: podman logs -f %s)\n' "$UNIT_NAME"
   printf 'Status: systemctl --user status jmail\n'
+}
+
+# opendkim-genkey writes the public key as a chunked BIND record:
+#
+#   sendonly._domainkey IN TXT ( "v=DKIM1; k=rsa; "
+#         "p=MIIBIjAN..." "...rest" )  ; ----- DKIM key sendonly for example.com
+#
+# DNS providers want one value without the quotes, the owner name or the
+# comment, and a copy-paste that keeps the quotes publishes a broken key.
+format_dkim_record() {
+  sed -e 's/; *-----.*$//' \
+    -e 's/^.*[[:space:]]TXT[[:space:]]*//' \
+    -e 's/[()"]//g' |
+    # Joining the chunks before restoring the tag spaces keeps the base64 value
+    # intact; a space inside p= would split the key.
+    tr -d '[:space:]' |
+    sed 's/;/; /g; s/; *$//'
 }
 
 # The key is generated inside the container during its first start, so this is
@@ -1265,8 +1324,11 @@ read_dkim_record() {
   for attempt in 1 2 3 4 5; do
     record="$(podman exec "$UNIT_NAME" cat "/etc/opendkim/keys/$domain/sendonly.txt" 2>/dev/null || true)"
     if [[ -n "$record" ]]; then
-      printf '%s' "$record"
-      return 0
+      record="$(printf '%s' "$record" | format_dkim_record)"
+      if [[ -n "$record" ]]; then
+        printf '%s' "$record"
+        return 0
+      fi
     fi
     sleep 1
   done

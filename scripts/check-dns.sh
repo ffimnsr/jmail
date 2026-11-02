@@ -336,21 +336,28 @@ detect_ip() {
   printf '%s' "$ip"
 }
 
-# Prints the p= value of the key the container generated for one domain, or
-# nothing when the container is not reachable from here.
-local_dkim_p() {
+# Prints the key the container generated as one unquoted TXT value, ready to
+# paste into a DNS provider.
+local_dkim_record() {
   local domain="$1" raw=""
   need_cmd podman || return 1
   podman exec "$CONTAINER" true >/dev/null 2>&1 || return 1
   raw="$(podman exec "$CONTAINER" cat "/etc/opendkim/keys/$domain/sendonly.txt" 2>/dev/null || true)"
   [[ -n "$raw" ]] || return 1
+  # sendonly.txt is a chunked BIND record: owner name, TXT type, quoted chunks
+  # and a trailing comment. DNS wants the joined value without any of that.
   printf '%s' "$raw" |
-    sed -e 's/;-----.*$//' |
-    # All whitespace, not just newlines: sendonly.txt splits the record into
-    # quoted chunks separated by tabs and spaces, and stopping p= at the first
-    # tab truncates the key to one chunk.
-    tr -d '[:space:]"' |
-    sed -n 's/.*p=\([A-Za-z0-9+/=]*\).*/\1/p'
+    sed -e 's/; *-----.*$//' -e 's/^.*[[:space:]]TXT[[:space:]]*//' -e 's/[()"]//g' |
+    tr -d '[:space:]' |
+    sed 's/;/; /g; s/; *$//'
+}
+
+# Prints the p= value of the key the container generated for one domain, or
+# nothing when the container is not reachable from here.
+local_dkim_p() {
+  local record
+  record="$(local_dkim_record "$1")" || return 1
+  tag_value "$record" p
 }
 
 # tag_value <record> <tag>
@@ -420,7 +427,7 @@ check_port25() {
 
 check_domain() {
   local domain="$1" ip="$2" hostname="$3"
-  local record records record_count p_spf published_p p_dkim local_p mx dkim_raw
+  local record records record_count p_spf published_p p_dkim local_p mx dkim_raw dkim_local
   local spf_ok=0 dkim_ok=0 dmarc dmarc_count p rua pct parent parent_p
   local ancestor inherited inherited_p inherited_rec
 
@@ -488,13 +495,20 @@ check_domain() {
     report FAIL "DKIM value contains literal quote characters"
     detail "the quotes from sendonly.txt were stored as part of the value"
     detail "paste it unquoted; the provider splits it into 255-byte strings itself"
+    dkim_local="$(local_dkim_record "$domain" || true)"
+    if [[ -n "$dkim_local" ]]; then
+      detail "replace it with this value:"
+      detail "  $dkim_local"
+    fi
   elif [[ -z "$published_p" ]]; then
     report FAIL "DKIM not published at sendonly._domainkey.$domain"
-    local_p="$(local_dkim_p "$domain" || true)"
-    if [[ -n "$local_p" ]]; then
-      detail "publish the key the container generated:"
-      detail "  podman exec $CONTAINER cat /etc/opendkim/keys/$domain/sendonly.txt"
+    dkim_local="$(local_dkim_record "$domain" || true)"
+    if [[ -n "$dkim_local" ]]; then
+      detail "publish this TXT value (no quotes):"
+      detail "  $dkim_local"
+      local_p="$(tag_value "$dkim_local" p)"
     else
+      local_p=""
       detail "the installer prints the record once the container has started"
     fi
     # A subdomain's record belongs in the parent zone. Publishing it at the
@@ -523,7 +537,13 @@ check_domain() {
     else
       dkim_ok=0
       report FAIL "DKIM published key differs from the key in the container"
-      detail "republish from: podman exec $CONTAINER cat /etc/opendkim/keys/$domain/sendonly.txt"
+      dkim_local="$(local_dkim_record "$domain" || true)"
+      if [[ -n "$dkim_local" ]]; then
+        detail "republish this TXT value (no quotes):"
+        detail "  $dkim_local"
+      else
+        detail "republish from: podman exec $CONTAINER cat /etc/opendkim/keys/$domain/sendonly.txt"
+      fi
     fi
   fi
 

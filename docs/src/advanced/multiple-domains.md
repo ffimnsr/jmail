@@ -79,12 +79,9 @@ each of your domains in turn:
 ```
 ; DNS for three.example
 
-; 1. DKIM — printed by the container at startup, or read from
-;    /etc/opendkim/keys/three.example/sendonly.txt
-sendonly._domainkey.three.example. 3600 IN TXT (
-  "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA..."
-  "...rest of the 2048-bit key, split into 255-character strings"
-)
+; 1. DKIM — one unquoted value; install.sh and check-dns.sh print it ready to paste.
+;    The raw file is /etc/opendkim/keys/three.example/sendonly.txt
+sendonly._domainkey.three.example. 3600 IN TXT "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...rest of the 2048-bit key"
 
 ; 2. SPF — the IP that actually opens the connection to the recipient
 three.example. 3600 IN TXT "v=spf1 ip4:203.0.113.10 -all"
@@ -92,6 +89,9 @@ three.example. 3600 IN TXT "v=spf1 ip4:203.0.113.10 -all"
 ; 3. DMARC — start permissive, tighten once the reports are clean
 _dmarc.three.example. 3600 IN TXT "v=DMARC1; p=none; rua=mailto:dmarc@three.example"
 ```
+
+The DKIM value is a single TXT value, not a list of quoted chunks. Paste it without the quotation marks that appear
+around the chunks in `sendonly.txt`; the provider splits long values into 255-character strings itself.
 
 Three details make the difference between "signed" and "accepted":
 
@@ -116,7 +116,7 @@ What does **not** need to change per domain:
 
 1. Add it to `JMAIL_DOMAINS` and recreate the container.
 2. Watch for `Creating DKIM keys for <domain>` and `Publish this DKIM record at sendonly._domainkey.<domain>` in the
-   log, then publish that TXT, the SPF record, and DMARC.
+   log, then publish that TXT (one unquoted value), the SPF record, and DMARC.
 3. Only then start sending `From:` that domain.
 
 **Rotating one domain** leaves the others alone:

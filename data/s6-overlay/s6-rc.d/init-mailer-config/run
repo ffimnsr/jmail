@@ -175,8 +175,12 @@ for domain in ${JMAIL_DOMAINS_CSV//,/ }; do
     rm -f "${OPENDKIM_KEYS_GENERATE_FILE}"
   fi
 
-  echo "Publish this DKIM record at sendonly._domainkey.$domain:"
-  cat $OPENDKIM_KEYS_DIR/sendonly.txt
+  # sendonly.txt is a BIND-style chunked record. Providers want one value
+  # without the quotes, and a copy-paste that keeps them breaks the key.
+  echo "Publish this DKIM record at sendonly._domainkey.$domain (one TXT value, no quotes):"
+  sed -e 's/; *-----.*$//' -e 's/^.*[[:space:]]TXT[[:space:]]*//' -e 's/[()"]//g' \
+    "${OPENDKIM_KEYS_DIR}/sendonly.txt" | tr -d '[:space:]' | sed 's/;/; /g; s/; *$//'
+  echo
 done
 
 echo "Setting up SASL password for jmail user"

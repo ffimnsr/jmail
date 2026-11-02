@@ -126,21 +126,23 @@ one domain does not touch the keys of the others.
 
 ### Publishing a 2048-bit key
 
-A 2048-bit public key produces a TXT record of roughly 400 characters. DNS stores TXT records as a list of
-255-character strings, so the record has to be split into quoted chunks on a single line:
+A 2048-bit public key produces a TXT value of roughly 400 characters. Publish it as a single unquoted value; DNS
+providers store long TXT values as one record and split them into 255-character strings on the wire themselves:
 
 ```
-sendonly._domainkey IN TXT ( "v=DKIM1; k=rsa; "
-  "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA..."
-  "...remaining base64..." )
+sendonly._domainkey.<domain>  TXT  v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...
 ```
 
-The `sendonly.txt` file next to the key and the log output are already printed in this split form, so copy them
-verbatim. Most DNS providers and APIs accept the quoted chunks and rejoin them; a few only accept a single
-unquoted string and reject records over 255 characters. If yours does, the clean fix is to move the record to a
-provider that can store long TXT values. Falling back to a 1024-bit key means changing the two `opendkim-genkey`
-calls in `/etc/s6-overlay/s6-rc.d/init-mailer-config/run` and rebuilding the image, and 1024-bit RSA keys are
-increasingly treated as weak by receivers.
+`sendonly.txt` next to the key is a BIND-style record: the value is split into quoted chunks and followed by a
+`; -----` comment. The container's first-start log, `install.sh` and `scripts/check-dns.sh` print the same key
+already joined into the single value above, which is the form to copy. If you read `sendonly.txt` by hand, strip
+the owner name, the parentheses, the quotation marks and the trailing comment first. Pasting the quoted chunks
+makes the provider store the quotes as data, and receivers then read a malformed key record.
+
+A small number of providers reject TXT values over 255 characters and cannot store the record at all; moving the
+zone to a provider that can is preferable to falling back to a 1024-bit key. Falling back means changing the two
+`opendkim-genkey` calls in `/etc/s6-overlay/s6-rc.d/init-mailer-config/run` and rebuilding the image, and 1024-bit
+RSA keys are increasingly treated as weak by receivers.
 
 ## Where the configuration lives
 
@@ -165,8 +167,8 @@ local test send does not prove any of them.
       receivers compare it with the banner hostname.
 - [ ] **No `MX` record is required.** jmail is outbound-only and does not accept inbound mail, so an MX record would
       advertise a service the container does not run. A pre-existing null MX (`v=MX:0 .`) is fine.
-- [ ] `DKIM` record at `sendonly._domainkey.<domain>`, once per domain in `JMAIL_DOMAINS`, from the log or that
-domain's `sendonly.txt`.
+- [ ] `DKIM` record at `sendonly._domainkey.<domain>`, once per domain in `JMAIL_DOMAINS`, copied as the single
+      unquoted value the installer or `check-dns.sh` prints.
 - [ ] `SPF` record on the domain you send `From:`, once per domain in `JMAIL_DOMAINS`. The example is a hard fail, not
       a soft fail:
   ```
