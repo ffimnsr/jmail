@@ -23,10 +23,11 @@ cosign.
 ### Interactive installer (user scope)
 
 `install.sh` sets up a rootless Podman service for the current user, no root required. It asks for the hostname,
-the sending domain (single or multiple), the SMTP credentials, the submission port and whether the jmail-http API
-should be enabled, then writes a quadlet and a `0600` environment file under your home directory and starts the
-service with `systemctl --user`. At the end it prints the SMTP credentials, the generated HTTP API token (33
-characters) when that is enabled, and the DKIM, SPF and DMARC records to publish for every signing domain.
+the sending domain (single or multiple), the SMTP credentials, the submission port, whether the jmail-http API
+should be enabled (with an optional bearer token and Supabase Auth hook projects), then writes a quadlet and a
+`0600` environment file under your home directory and starts the service with `systemctl --user`. At the end it
+prints the SMTP credentials, the generated HTTP API token (33 characters) when one was requested, and the DKIM,
+SPF and DMARC records to publish for every signing domain.
 
 ```sh
 ./install.sh                  # ask for every value
@@ -47,7 +48,7 @@ The installer reuses the values in `jmail.env` when it runs again, so it is also
 it on an existing installation asks whether to reconfigure or update, or you can say which explicitly:
 
 ```sh
-./install.sh --reconfigure  # change settings; keeps data and DKIM keys, restarts the service
+./install.sh --reconfigure  # pick which sections to change; keeps data and DKIM keys
 ./install.sh --update       # pull the newest image and restart; settings untouched
 ```
 

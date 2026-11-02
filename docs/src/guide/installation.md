@@ -174,16 +174,18 @@ generated when you do not supply one, written to the same environment file, and 
 ### Interactive installer
 
 `./install.sh` in the repository root does the same in one step for the current user: it asks for the hostname, the
-sending domain (single or multiple), the SMTP credentials, the submission port and whether the jmail-http API is
-enabled, writes the quadlet to `~/.config/containers/systemd/jmail.container` and the environment file to
+sending domain (single or multiple), the SMTP credentials, the submission port, whether the jmail-http API is enabled
+and whether it should also accept a bearer token, and how many Supabase Auth hook projects to configure. It writes the
+quadlet to `~/.config/containers/systemd/jmail.container` and the environment file to
 `~/.config/jmail/jmail.env`, then starts `jmail.service` with `systemctl --user`. At the end it prints the SMTP
-credentials, the generated HTTP API token (33 characters) when that is enabled, and the DKIM, SPF and DMARC records
-to publish for every signing domain. The installer keeps the data under `~/.local/share/jmail` and reads the
+credentials, the generated HTTP API token (33 characters) when one was requested, and the DKIM, SPF and DMARC
+records to publish for every signing domain. The installer keeps the data under `~/.local/share/jmail` and reads the
 environment file back on the next run, so re-running it changes settings instead of starting over.
 
 The environment file also holds the installer's own settings (`JMAIL_IMAGE`, `JMAIL_PUBLISH_PORT`,
-`JMAIL_HTTP_PUBLISH_BIND`, `JMAIL_HTTP_PUBLISH_PORT`) so a re-run remembers them; the container ignores those keys.
-Variables you add by hand, such as `JMAIL_TLS_LEVEL`, are preserved across a reconfigure.
+`JMAIL_HTTP_PUBLISH_BIND`, `JMAIL_HTTP_PUBLISH_PORT`) and the Supabase hook projects
+(`JMAIL_HTTP_SUPABASE_<N>_*`), so a re-run remembers them; the container ignores the installer keys. Variables you add
+by hand, such as `JMAIL_TLS_LEVEL`, are preserved across a reconfigure.
 
 Running it again on an existing installation offers two modes, which can also be selected directly:
 
@@ -191,6 +193,10 @@ Running it again on an existing installation offers two modes, which can also be
 ./install.sh --reconfigure  # change settings; keeps data and DKIM keys, restarts the service
 ./install.sh --update       # pull the newest image and restart; settings untouched
 ```
+
+A reconfigure first asks which sections to change — domains and hostname, mailbox and SMTP credentials, ports and
+networks, HTTP API, Supabase Auth hook, image — and writes every other section back exactly as it is. Leave the answer
+blank to walk through everything, which is also what `--yes` does.
 
 Reconfiguring restarts a running service so the new environment takes effect, and asks whether to pull a newer
 image first. Updating always pulls, and does so before stopping anything, so a failed pull leaves the running

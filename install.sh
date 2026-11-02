@@ -37,6 +37,8 @@ IMAGE="${JMAIL_IMAGE:-}"
 ACTION=""
 ASSUME_YES=0
 GENERATE_ONLY=0
+# Sections selected for a reconfigure; see choose_sections.
+SECTIONS=""
 # Set once the service is up, so the summary can read the generated DKIM keys.
 READ_DKIM=0
 
@@ -49,7 +51,8 @@ Usage: install.sh [options]
 Options:
   -y, --yes             Do not prompt; take defaults and JMAIL_* environment values.
       --reconfigure     Change settings, keeping the data directory and DKIM keys.
-                        Asks whether to pull a newer image before restarting.
+                        Asks which sections to change, then whether to pull a newer
+                        image before restarting.
       --update          Pull the image and restart the service, without changing settings.
       --generate-only   Write the unit and environment file, but do not touch systemd.
       --image <ref>     Container image. Default: ${DEFAULT_IMAGE}
@@ -71,6 +74,8 @@ Prompts, and the variable each one sets:
   JMAIL_HTTP_TOKEN       Enables the HTTP API. A 33-character token is generated.
   JMAIL_HTTP_PUBLISH_BIND  Interface for the HTTP API. Default: 127.0.0.1
   JMAIL_HTTP_PUBLISH_PORT  Host port published as container port 8080.
+  JMAIL_HTTP_SUPABASE_<N>_HOOK_SECRET
+                           Supabase Auth email hook, one numbered set per project.
   JMAIL_IMAGE              Container image, remembered across runs.
   JMAIL_ENABLE_LINGER      Set to 1 to enable systemd lingering in --yes mode.
 
@@ -79,8 +84,9 @@ Files written:
   ${ENV_FILE}
   ${DATA_DIR}/{postfix-ssl,opendkim-keys,spool,postfix.d,init.d,http-state}
 
-Reconfiguring reuses the values in ${ENV_FILE} as defaults, so it is safe to run to
-change one setting. Updating leaves that file and the data directory untouched.
+Reconfiguring asks which sections to change and reuses the values in ${ENV_FILE} as
+defaults, so it is safe to run to change one setting. Updating leaves that file and the
+data directory untouched.
 EOF
 }
 
@@ -218,6 +224,8 @@ unmanaged_env_lines() {
       key = $1
       gsub(/^[[:space:]]+/, "", key)
       gsub(/[[:space:]]+$/, "", key)
+      # Every Supabase hook key, numbered or not, is rewritten by install.sh.
+      if (key ~ /^JMAIL_HTTP_SUPABASE_/) { next }
       for (i = 1; i <= count; i++) {
         if (key == keys[i]) { next }
       }
@@ -302,7 +310,7 @@ ask_secret() {
     printf '%s' "$default"
     return 0
   fi
-  printf '%s (press Enter to use a generated value): ' "$label" >&2
+  printf '%s: ' "$label" >&2
   IFS= read -rs answer </dev/tty || die "no input available (use --yes for a non-interactive install)"
   printf '\n' >&2
   printf '%s' "${answer:-$default}"
@@ -425,6 +433,169 @@ list_add() {
 }
 
 # --- modes ------------------------------------------------------------------
+
+# --- reconfiguration sections ------------------------------------------------
+
+section_wanted() {
+  [[ " $SECTIONS " == *" $1 "* ]]
+}
+
+# Only a reconfigure asks. A fresh install and --yes change everything, which is
+# what they did before this menu existed.
+choose_sections() {
+  SECTIONS="1 2 3 4 5 6"
+  if [[ "$ACTION" != "reconfigure" ]] || ((ASSUME_YES)); then
+    return 0
+  fi
+
+  printf '\nWhat do you want to reconfigure? Anything you leave out keeps the value\nfrom %s.\n' "$ENV_FILE" >&2
+  printf '  1) domains and hostname\n' >&2
+  printf '  2) mailbox and SMTP credentials\n' >&2
+  printf '  3) ports and networks\n' >&2
+  printf '  4) HTTP API\n' >&2
+  printf '  5) Supabase Auth email hook\n' >&2
+  printf '  6) image\n' >&2
+
+  local answer token picked ok
+  while :; do
+    answer="$(ask "Sections to change (for example 2 4, blank for all)" "all")" || exit 1
+    if [[ -z "$answer" || "$answer" == "all" ]]; then
+      SECTIONS="1 2 3 4 5 6"
+      return 0
+    fi
+    picked=""
+    ok=1
+    for token in ${answer//,/ }; do
+      case "$token" in
+        1 | 2 | 3 | 4 | 5 | 6)
+          case " $picked " in
+            *" $token "*) ;;
+            *) picked="${picked:+$picked }$token" ;;
+          esac
+          ;;
+        *) ok=0 ;;
+      esac
+    done
+    if ((ok)) && [[ -n "$picked" ]]; then
+      SECTIONS="$picked"
+      return 0
+    fi
+    printf '  enter numbers from 1 to 6, separated by spaces or commas\n' >&2
+  done
+}
+
+# Mirrors the base64 forms the container accepts for a hook secret.
+valid_hook_secret() {
+  local value="$1"
+  value="${value#v1,}"
+  value="${value#whsec_}"
+  [[ -n "$value" ]] || return 1
+  need_cmd base64 || return 0
+  # GNU base64 wants padding; the container accepts unpadded base64 too.
+  case $((${#value} % 4)) in
+    1) return 1 ;;
+    2) value="${value}==" ;;
+    3) value="${value}=" ;;
+  esac
+  printf '%s' "$value" | base64 -d >/dev/null 2>&1
+}
+
+# Reads the Supabase projects already configured into sb_count, sb_secret,
+# sb_url and sb_from. The unnumbered variables describe one project and are
+# migrated to the indexed form on the next write.
+load_supabase_projects() {
+  local secret i
+  sb_count=0
+  sb_secret=()
+  sb_url=()
+  sb_from=()
+
+  secret="$(env_value JMAIL_HTTP_SUPABASE_HOOK_SECRET)"
+  if [[ -n "$secret" ]]; then
+    sb_secret[0]="$secret"
+    sb_url[0]="$(env_value JMAIL_HTTP_SUPABASE_URL)"
+    sb_from[0]="$(env_value JMAIL_HTTP_SUPABASE_FROM)"
+    sb_count=1
+  fi
+
+  for ((i = 1; i <= 16; i++)); do
+    secret="$(env_value "JMAIL_HTTP_SUPABASE_${i}_HOOK_SECRET")"
+    [[ -n "$secret" ]] || continue
+    sb_secret[sb_count]="$secret"
+    sb_url[sb_count]="$(env_value "JMAIL_HTTP_SUPABASE_${i}_URL")"
+    sb_from[sb_count]="$(env_value "JMAIL_HTTP_SUPABASE_${i}_FROM")"
+    sb_count=$((sb_count + 1))
+  done
+}
+
+# Prompts for the Supabase projects and rewrites sb_*. Only called when the HTTP
+# API is enabled, because the hook is served by it.
+configure_supabase_projects() {
+  local count_default="$sb_count" count default_secret default_url default_from
+  local secret url from i
+  local -a next_secret=() next_url=() next_from=()
+
+  while :; do
+    count="$(ask "Supabase projects to configure (0 disables the hook)" "$count_default")" || exit 1
+    if [[ "$count" =~ ^[0-9]+$ ]] && ((10#$count <= 16)); then
+      count=$((10#$count))
+      break
+    fi
+    if ((ASSUME_YES)); then
+      die "invalid Supabase project count: $count"
+    fi
+    printf '  enter a number between 0 and 16\n' >&2
+  done
+
+  if ((count == 0)); then
+    if ((sb_count > 0)); then
+      printf 'The Supabase Auth hook will be disabled.\n' >&2
+    fi
+    sb_count=0
+    sb_secret=()
+    sb_url=()
+    sb_from=()
+    return 0
+  fi
+
+  for ((i = 1; i <= count; i++)); do
+    default_secret="${sb_secret[i - 1]:-}"
+    default_url="${sb_url[i - 1]:-}"
+    default_from="${sb_from[i - 1]:-}"
+
+    while :; do
+      secret="$(ask_secret "Project $i hook secret, v1,whsec_... (Enter keeps the current one)" "$default_secret")" || exit 1
+      if valid_hook_secret "$secret"; then
+        break
+      fi
+      if ((ASSUME_YES)); then
+        die "project $i hook secret is not base64; copy it from the Supabase dashboard"
+      fi
+      printf '  that is not a base64 hook secret; copy it from the Supabase dashboard\n' >&2
+    done
+
+    url="$(ask "Project $i API URL (blank leaves the link out of the email)" "$default_url")" || exit 1
+    if [[ -n "$url" ]] && [[ ! "$url" =~ ^https?://[^/]+ ]]; then
+      warn "$url does not look like an http(s) URL; the container will refuse to start"
+    fi
+    url="${url%/}"
+
+    from="$(ask_email "Project $i send from" "${default_from:-noreply@$origin}")" || exit 1
+    # Leaving the origin default unset keeps following JMAIL_ORIGIN if it moves.
+    if [[ "$from" == "noreply@$origin" ]]; then
+      from=""
+    fi
+
+    next_secret[i - 1]="$secret"
+    next_url[i - 1]="$url"
+    next_from[i - 1]="$from"
+  done
+
+  sb_secret=("${next_secret[@]}")
+  sb_url=("${next_url[@]}")
+  sb_from=("${next_from[@]}")
+  sb_count="$count"
+}
 
 choose_action() {
   if [[ -n "$ACTION" ]]; then
@@ -567,160 +738,257 @@ main() {
     printf 'Reconfiguring the installation at %s; its values are the defaults below.\n\n' "$ENV_FILE" >&2
   fi
 
-  local origin hostname hostname_default root_email root_email_default
-  local smtp_user smtp_user_default smtp_password existing_password generated_password
-  local publish_port port_default mynetworks networks_default
-  local existing_domains_raw existing_extras seed mode_default choice more
+  choose_sections
+
+  # Everything starts from what is on disk, so a section that is not selected is
+  # written back unchanged instead of being walked through again.
+  local origin hostname root_email smtp_user smtp_password
+  local publish_port mynetworks
   local http_enabled=0 http_token="" http_bind="127.0.0.1" http_port="8080"
-  local http_default="n" extra_domains=""
+  local sb_count=0 i
+  local -a sb_secret=() sb_url=() sb_from=()
 
-  origin="$(ask_domain "Primary sending domain (JMAIL_ORIGIN)" "$(env_value JMAIL_ORIGIN)")"
+  local extra_domains="" existing_domains_raw="" existing_extras="" seed
+  local mode_default choice more root_email_default smtp_user_default
+  local existing_password generated_password port_default networks_default
+  local image_default do_pull=0
 
-  hostname_default="$(env_value JMAIL_HOSTNAME)"
-  if [[ -z "$hostname_default" ]]; then
-    hostname_default="mail.$origin"
-  fi
-  hostname="$(ask_domain "Mail server hostname (JMAIL_HOSTNAME)" "$hostname_default")"
+  origin="$(env_value JMAIL_ORIGIN)"
+  hostname="$(env_value JMAIL_HOSTNAME)"
+  root_email="$(env_value JMAIL_ROOT_EMAIL)"
+  smtp_user="$(env_value JMAIL_SMTP_USER)"
+  smtp_password="$(env_value JMAIL_SMTP_PASSWORD)"
+  publish_port="$(env_value JMAIL_PUBLISH_PORT)"
+  mynetworks="$(env_value JMAIL_MYNETWORKS)"
 
-  # Previous additional domains, minus the origin, which is always signed.
+  # Additional domains, minus the origin, which is always signed.
   existing_domains_raw="$(env_value JMAIL_DOMAINS)"
-  existing_extras=""
   for seed in ${existing_domains_raw//,/ }; do
     seed="$(normalize_domain "$seed")"
     if [[ -n "$seed" ]] && [[ "$seed" != "$origin" ]]; then
       existing_extras="$(list_add "$existing_extras" "$seed")"
     fi
   done
+  extra_domains="$existing_extras"
 
-  mode_default="1"
-  if [[ -n "$existing_extras" ]]; then
-    mode_default="2"
+  http_token="$(env_value JMAIL_HTTP_TOKEN)"
+  http_bind="$(env_value JMAIL_HTTP_PUBLISH_BIND)"
+  [[ -n "$http_bind" ]] || http_bind="127.0.0.1"
+  http_port="$(env_value JMAIL_HTTP_PUBLISH_PORT)"
+  [[ -n "$http_port" ]] || http_port="8080"
+  if [[ -n "$http_token" ]] || [[ -n "${JMAIL_HTTP_PUBLISH_PORT:-}" ]] ||
+    [[ -n "$(env_get JMAIL_HTTP_PUBLISH_PORT)" ]]; then
+    http_enabled=1
   fi
 
-  if ((ASSUME_YES)); then
-    choice="$mode_default"
-  else
-    printf '\nWill jmail send mail from a single domain or from several domains?\n' >&2
-    printf '  1) single domain   (%s only)\n' "$origin" >&2
-    printf '  2) multiple domains (each one gets its own DKIM key)\n' >&2
-    while :; do
-      choice="$(ask "Choose 1 or 2" "$mode_default")"
-      case "$choice" in
-        1|2) break ;;
-        *) printf '  enter 1 or 2\n' >&2 ;;
-      esac
-    done
+  load_supabase_projects
+  if ((sb_count > 0)); then
+    http_enabled=1
   fi
 
-  if [[ "$choice" == "2" ]]; then
-    if [[ -n "$existing_extras" ]]; then
-      if ask_yn "Keep the existing additional domains (${existing_extras//,/ })" y; then
-        extra_domains="$existing_extras"
+  # --- 1. domains and hostname ---------------------------------------------
+  if section_wanted 1; then
+    origin="$(ask_domain "Primary sending domain (JMAIL_ORIGIN)" "$origin")"
+    hostname="$(ask_domain "Mail server hostname (JMAIL_HOSTNAME)" "${hostname:-mail.$origin}")"
+
+    # Recompute the extras against the (possibly new) origin.
+    existing_extras=""
+    for seed in ${existing_domains_raw//,/ }; do
+      seed="$(normalize_domain "$seed")"
+      if [[ -n "$seed" ]] && [[ "$seed" != "$origin" ]]; then
+        existing_extras="$(list_add "$existing_extras" "$seed")"
       fi
+    done
+    extra_domains="$existing_extras"
+
+    mode_default="1"
+    if [[ -n "$existing_extras" ]]; then
+      mode_default="2"
     fi
-    if ((!ASSUME_YES)); then
-      printf 'Enter each additional sending domain. Leave it blank when you are done.\n' >&2
+
+    if ((ASSUME_YES)); then
+      choice="$mode_default"
+    else
+      printf '\nWill jmail send mail from a single domain or from several domains?\n' >&2
+      printf '  1) single domain   (%s only)\n' "$origin" >&2
+      printf '  2) multiple domains (each one gets its own DKIM key)\n' >&2
       while :; do
-        more="$(ask "Additional domain (blank to finish)" "")"
-        if [[ -z "$more" ]]; then
-          break
-        fi
-        more="$(normalize_domain "$more")"
-        if ! valid_domain "$more"; then
-          printf '  %s is not a valid domain name\n' "$more" >&2
-          continue
-        fi
-        if [[ "$more" == "$origin" ]]; then
-          printf '  %s is the primary domain and is always signed\n' "$more" >&2
-          continue
-        fi
-        extra_domains="$(list_add "$extra_domains" "$more")"
+        choice="$(ask "Choose 1 or 2" "$mode_default")" || exit 1
+        case "$choice" in
+          1 | 2) break ;;
+          *) printf '  enter 1 or 2\n' >&2 ;;
+        esac
       done
     fi
-  fi
 
-  root_email_default="$(env_value JMAIL_ROOT_EMAIL)"
-  if [[ -z "$root_email_default" ]]; then
-    root_email_default="postmaster@$origin"
-  fi
-  root_email="$(ask_email "Mailbox for test messages (JMAIL_ROOT_EMAIL)" "$root_email_default")"
-
-  smtp_user_default="$(env_value JMAIL_SMTP_USER)"
-  if [[ -z "$smtp_user_default" ]]; then
-    smtp_user_default="jmail"
-  fi
-  smtp_user="$(ask_required "SMTP username (JMAIL_SMTP_USER)" "$smtp_user_default")"
-
-  existing_password="$(env_get JMAIL_SMTP_PASSWORD)"
-  smtp_password="$(env_value JMAIL_SMTP_PASSWORD)"
-  if [[ -z "$smtp_password" ]]; then
-    generated_password="$(generate_secret 16)"
-    smtp_password="$(ask_secret "SMTP password for $smtp_user" "$generated_password")"
-  elif [[ -n "$existing_password" ]] && [[ -z "${JMAIL_SMTP_PASSWORD-}" ]]; then
-    printf 'Reusing the SMTP password from %s.\n' "$ENV_FILE" >&2
-  fi
-
-  port_default="$(env_value JMAIL_PUBLISH_PORT)"
-  if [[ -z "$port_default" ]]; then
-    port_default="$DEFAULT_PUBLISH_PORT"
-  fi
-  publish_port="$(ask_port "Host port for SMTP submission (JMAIL_PUBLISH_PORT)" "$port_default")"
-
-  networks_default="$(env_value JMAIL_MYNETWORKS)"
-  if [[ -z "$networks_default" ]]; then
-    networks_default="127.0.0.0/8"
-  fi
-  mynetworks="$(ask_required "Networks that may relay without authentication (JMAIL_MYNETWORKS)" "$networks_default")"
-
-  if [[ -n "$(env_value JMAIL_HTTP_TOKEN)" ]]; then
-    http_default="y"
-  fi
-  if ask_yn "Enable the jmail-http API (JMAIL_HTTP_TOKEN)" "$http_default"; then
-    http_enabled=1
-    http_token="$(env_value JMAIL_HTTP_TOKEN)"
-    if [[ -z "$http_token" ]]; then
-      http_token="$(generate_token 33)"
-    fi
-
-    http_bind="$(env_value JMAIL_HTTP_PUBLISH_BIND)"
-    if [[ -z "$http_bind" ]]; then
-      http_bind="127.0.0.1"
-    fi
-    http_bind="$(ask_required "Host interface for the HTTP API (JMAIL_HTTP_PUBLISH_BIND)" "$http_bind")"
-    # PublishPort wants [addr] for IPv6. Accept a bare address and normalise it
-    # once, so the value read back on the next run is already bracketed.
-    if [[ "$http_bind" == *:* ]] && [[ "$http_bind" != \[*\] ]]; then
-      http_bind="[$http_bind]"
-    fi
-
-    http_port="$(env_value JMAIL_HTTP_PUBLISH_PORT)"
-    if [[ -z "$http_port" ]]; then
-      http_port="8080"
-    fi
-    http_port="$(ask_port "Host port for the HTTP API (JMAIL_HTTP_PUBLISH_PORT)" "$http_port")"
-  fi
-
-  local image_default
-  image_default="$(resolve_image)"
-  IMAGE="$(ask_required "Container image" "$image_default")"
-
-  # The unit uses Pull=missing, so this decides whether a newer image is fetched
-  # before the service restarts.
-  local do_pull=0
-  if ((!GENERATE_ONLY)); then
-    if [[ "$ACTION" == "install" ]]; then
-      do_pull=1
+    if [[ "$choice" == "2" ]]; then
+      if [[ -n "$existing_extras" ]]; then
+        if ask_yn "Keep the existing additional domains (${existing_extras//,/ })" y; then
+          extra_domains="$existing_extras"
+        else
+          extra_domains=""
+        fi
+      fi
+      if ((!ASSUME_YES)); then
+        printf 'Enter each additional sending domain. Leave it blank when you are done.\n' >&2
+        while :; do
+          more="$(ask "Additional domain (blank to finish)" "")" || exit 1
+          if [[ -z "$more" ]]; then
+            break
+          fi
+          more="$(normalize_domain "$more")"
+          if ! valid_domain "$more"; then
+            printf '  %s is not a valid domain name\n' "$more" >&2
+            continue
+          fi
+          if [[ "$more" == "$origin" ]]; then
+            printf '  %s is the primary domain and is always signed\n' "$more" >&2
+            continue
+          fi
+          extra_domains="$(list_add "$extra_domains" "$more")"
+        done
+      fi
     else
-      local pull_default="y"
-      if ((ASSUME_YES)); then
-        # --yes must not surprise automation with a registry call; --update is
-        # the explicit way to pull.
-        pull_default="n"
+      extra_domains=""
+    fi
+  fi
+
+  # --- 2. mailbox and SMTP credentials -------------------------------------
+  if section_wanted 2; then
+    root_email_default="${root_email:-postmaster@$origin}"
+    root_email="$(ask_email "Mailbox for test messages (JMAIL_ROOT_EMAIL)" "$root_email_default")"
+
+    smtp_user_default="${smtp_user:-jmail}"
+    smtp_user="$(ask_required "SMTP username (JMAIL_SMTP_USER)" "$smtp_user_default")"
+
+    existing_password="$(env_get JMAIL_SMTP_PASSWORD)"
+    if [[ -z "$smtp_password" ]]; then
+      generated_password="$(generate_secret 16)"
+      smtp_password="$(ask_secret "SMTP password for $smtp_user (Enter to use a generated one)" "$generated_password")"
+    elif [[ -n "$existing_password" ]] && [[ -z "${JMAIL_SMTP_PASSWORD-}" ]]; then
+      printf 'Reusing the SMTP password from %s.\n' "$ENV_FILE" >&2
+    fi
+  fi
+
+  # --- 3. ports and networks -----------------------------------------------
+  if section_wanted 3; then
+    port_default="${publish_port:-$DEFAULT_PUBLISH_PORT}"
+    publish_port="$(ask_port "Host port for SMTP submission (JMAIL_PUBLISH_PORT)" "$port_default")"
+
+    networks_default="${mynetworks:-127.0.0.0/8}"
+    mynetworks="$(ask_required "Networks that may relay without authentication (JMAIL_MYNETWORKS)" "$networks_default")"
+  else
+    [[ -n "$publish_port" ]] || publish_port="$DEFAULT_PUBLISH_PORT"
+    [[ -n "$mynetworks" ]] || mynetworks="127.0.0.0/8"
+  fi
+
+  # --- 4. HTTP API ----------------------------------------------------------
+  if section_wanted 4; then
+    local http_default="n" token_default="y"
+    if ((http_enabled)); then
+      http_default="y"
+    fi
+    if [[ -z "$http_token" ]] && ((sb_count > 0)); then
+      # A hook-only deployment does not need the bearer token.
+      token_default="n"
+    fi
+
+    if ask_yn "Enable the jmail-http API" "$http_default"; then
+      http_enabled=1
+      if ask_yn "Require a bearer token for POST /v1/send" "$token_default"; then
+        if [[ -z "$http_token" ]]; then
+          http_token="$(generate_token 33)"
+        fi
+      else
+        http_token=""
       fi
-      if ask_yn "Pull ${IMAGE} before restarting, in case a newer image is published" "$pull_default"; then
-        do_pull=1
+
+      http_bind="$(ask_required "Host interface for the HTTP API (JMAIL_HTTP_PUBLISH_BIND)" "$http_bind")"
+      # PublishPort wants [addr] for IPv6. Accept a bare address and normalise it
+      # once, so the value read back on the next run is already bracketed.
+      if [[ "$http_bind" == *:* ]] && [[ "$http_bind" != \[*\] ]]; then
+        http_bind="[$http_bind]"
+      fi
+      http_port="$(ask_port "Host port for the HTTP API (JMAIL_HTTP_PUBLISH_PORT)" "$http_port")"
+    else
+      http_enabled=0
+      http_token=""
+      if ((sb_count > 0)); then
+        warn "the Supabase hook is served by the HTTP API; dropping $sb_count project(s)"
+        sb_count=0
+        sb_secret=()
+        sb_url=()
+        sb_from=()
       fi
     fi
+  fi
+
+  # --- 5. Supabase Auth email hook -----------------------------------------
+  if section_wanted 5; then
+    if ((http_enabled == 0)); then
+      warn "the Supabase hook is served by the HTTP API; include section 4 to configure it"
+    else
+      configure_supabase_projects
+    fi
+  fi
+
+  # --- 6. image -------------------------------------------------------------
+  if section_wanted 6; then
+    image_default="$(resolve_image)"
+    IMAGE="$(ask_required "Container image" "$image_default")"
+
+    # The unit uses Pull=missing, so this decides whether a newer image is fetched
+    # before the service restarts.
+    if ((!GENERATE_ONLY)); then
+      if [[ "$ACTION" == "install" ]]; then
+        do_pull=1
+      else
+        local pull_default="y"
+        if ((ASSUME_YES)); then
+          # --yes must not surprise automation with a registry call; --update is
+          # the explicit way to pull.
+          pull_default="n"
+        fi
+        if ask_yn "Pull ${IMAGE} before restarting, in case a newer image is published" "$pull_default"; then
+          do_pull=1
+        fi
+      fi
+    fi
+  else
+    IMAGE="$(resolve_image)"
+  fi
+
+  # Enabling the API with neither a token nor a project would leave the service
+  # with nothing to serve, which the container refuses to start with.
+  if ((http_enabled)) && [[ -z "$http_token" ]] && ((sb_count == 0)); then
+    warn "the HTTP API was enabled without a bearer token or a Supabase project; generating a token"
+    http_token="$(generate_token 33)"
+  fi
+
+  # The container refuses to start when a hook sender is outside the allowed
+  # sender domains, so catch it here, before the service restart fails.
+  if ((sb_count > 0)); then
+    local hook_from hook_domain allowed_raw allowed_domain hook_allowed
+    allowed_raw="$(env_value JMAIL_HTTP_ALLOWED_FROM)"
+    for ((i = 0; i < sb_count; i++)); do
+      hook_from="${sb_from[i]:-}"
+      [[ -n "$hook_from" ]] || continue
+      hook_domain="$(printf '%s' "${hook_from##*@}" | tr '[:upper:]' '[:lower:]')"
+      hook_allowed=0
+      if [[ "$allowed_raw" == "*" ]] || [[ "$hook_domain" == "$origin" ]] ||
+        [[ ",${extra_domains}," == *",${hook_domain},"* ]]; then
+        hook_allowed=1
+      fi
+      # Word splitting is intended: JMAIL_HTTP_ALLOWED_FROM is comma or space separated.
+      for allowed_domain in ${allowed_raw//,/ }; do
+        if [[ "$(printf '%s' "$allowed_domain" | tr '[:upper:]' '[:lower:]')" == "$hook_domain" ]]; then
+          hook_allowed=1
+        fi
+      done
+      if ((hook_allowed == 0)); then
+        die "Supabase project $((i + 1)) sends from $hook_from, which is not in JMAIL_ORIGIN, JMAIL_DOMAINS or JMAIL_HTTP_ALLOWED_FROM; add the domain or change the sender"
+      fi
+    done
   fi
 
   printf '\nSummary\n' >&2
@@ -741,9 +1009,16 @@ main() {
     fi
   fi
   if ((http_enabled)); then
-    printf '  HTTP API   : %s:%s\n' "$http_bind" "$http_port" >&2
+    if [[ -n "$http_token" ]]; then
+      printf '  HTTP API   : %s:%s (bearer token)\n' "$http_bind" "$http_port" >&2
+    else
+      printf '  HTTP API   : %s:%s (Supabase hook only)\n' "$http_bind" "$http_port" >&2
+    fi
   else
     printf '  HTTP API   : disabled\n' >&2
+  fi
+  if ((sb_count > 0)); then
+    printf '  Supabase   : %s project(s)\n' "$sb_count" >&2
   fi
   printf '  data dir   : %s\n\n' "$DATA_DIR" >&2
 
@@ -791,7 +1066,7 @@ main() {
       printf 'JMAIL_SMTP_USER=%s\n' "$(env_literal "$smtp_user")"
       printf 'JMAIL_SMTP_PASSWORD=%s\n' "$(env_literal "$smtp_password")"
       printf 'JMAIL_MYNETWORKS=%s\n' "$(env_literal "$mynetworks")"
-      if ((http_enabled)); then
+      if ((http_enabled)) && [[ -n "$http_token" ]]; then
         printf 'JMAIL_HTTP_TOKEN=%s\n' "$(env_literal "$http_token")"
       fi
       # Installer state, read back by the next run. The container ignores these.
@@ -800,6 +1075,17 @@ main() {
       if ((http_enabled)); then
         printf 'JMAIL_HTTP_PUBLISH_BIND=%s\n' "$(env_literal "$http_bind")"
         printf 'JMAIL_HTTP_PUBLISH_PORT=%s\n' "$(env_literal "$http_port")"
+      fi
+      if ((http_enabled && sb_count > 0)); then
+        for ((i = 1; i <= sb_count; i++)); do
+          printf 'JMAIL_HTTP_SUPABASE_%d_HOOK_SECRET=%s\n' "$i" "$(env_literal "${sb_secret[i - 1]}")"
+          if [[ -n "${sb_url[i - 1]:-}" ]]; then
+            printf 'JMAIL_HTTP_SUPABASE_%d_URL=%s\n' "$i" "$(env_literal "${sb_url[i - 1]}")"
+          fi
+          if [[ -n "${sb_from[i - 1]:-}" ]]; then
+            printf 'JMAIL_HTTP_SUPABASE_%d_FROM=%s\n' "$i" "$(env_literal "${sb_from[i - 1]}")"
+          fi
+        done
       fi
       if [[ -n "$preserved_env" ]]; then
         printf '# Preserved from the previous install; install.sh does not manage these.\n'
@@ -863,7 +1149,7 @@ EOF
     printf '\nStart it with:\n  systemctl --user daemon-reload\n  systemctl --user start jmail.service\n'
     printf 'If it is already running, use `systemctl --user restart jmail.service` instead.\n'
     print_summary "$origin" "$extra_domains" "$hostname" "$publish_port" \
-      "$smtp_user" "$smtp_password" "$http_enabled" "$http_bind" "$http_port" "$http_token"
+      "$smtp_user" "$smtp_password" "$http_enabled" "$http_bind" "$http_port" "$http_token" "$sb_count"
     exit 0
   fi
 
@@ -906,13 +1192,13 @@ EOF
   fi
 
   print_summary "$origin" "$extra_domains" "$hostname" "$publish_port" \
-    "$smtp_user" "$smtp_password" "$http_enabled" "$http_bind" "$http_port" "$http_token"
+    "$smtp_user" "$smtp_password" "$http_enabled" "$http_bind" "$http_port" "$http_token" "$sb_count"
 }
 
 print_summary() {
   local origin="$1" extra_domains="$2" hostname="$3" publish_port="$4"
   local smtp_user="$5" smtp_password="$6" http_enabled="$7" http_bind="$8"
-  local http_port="$9" http_token="${10}" domain dkim_record
+  local http_port="$9" http_token="${10}" supabase_count="${11}" domain dkim_record
 
   printf '\n=== jmail configuration ===\n\n'
   printf 'Environment file : %s\n' "$ENV_FILE"
@@ -926,10 +1212,23 @@ print_summary() {
   printf '  password : %s\n' "$smtp_password"
   printf '  STARTTLS is required before AUTH\n\n'
 
-  if ((http_enabled)); then
+  if ((http_enabled)) && [[ -n "$http_token" ]]; then
     printf 'HTTP API (jmail-http)\n'
     printf '  endpoint : http://%s:%s/v1/send\n' "$http_bind" "$http_port"
     printf '  token    : %s\n' "$http_token"
+    if [[ "$http_bind" == "127.0.0.1" ]] || [[ "$http_bind" == "[::1]" ]]; then
+      printf '  It is bound to loopback; put TLS in front of it before exposing it.\n'
+    fi
+    printf '\n'
+  elif ((http_enabled)); then
+    printf 'HTTP API (jmail-http)\n'
+    printf '  send API : disabled (no bearer token)\n\n'
+  fi
+
+  if ((supabase_count > 0)); then
+    printf 'Supabase Auth hook\n'
+    printf '  endpoint : http://%s:%s/v1/hooks/supabase/send-email\n' "$http_bind" "$http_port"
+    printf '  projects : %s\n' "$supabase_count"
     if [[ "$http_bind" == "127.0.0.1" ]] || [[ "$http_bind" == "[::1]" ]]; then
       printf '  It is bound to loopback; put TLS in front of it before exposing it.\n'
     fi

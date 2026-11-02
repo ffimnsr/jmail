@@ -222,7 +222,8 @@ that project's API URL and sender are used for the email.
 
 `N` runs from 1 to 16. The unnumbered variables above still work and can be combined with the indexed ones; each
 sender has to be within `JMAIL_HTTP_ALLOWED_FROM`. A queued email logs its project prefix, so the container log tells
-the projects apart.
+the projects apart. `./install.sh` asks for the project count and writes this indexed form; on a re-run it also reads
+the older unnumbered variables and rewrites them as project 1.
 
 ### Authentication
 
