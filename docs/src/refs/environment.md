@@ -44,7 +44,7 @@ The HTTP submission API is off unless `JMAIL_HTTP_TOKEN` or `JMAIL_HTTP_SUPABASE
 | `JMAIL_HTTP_RATE_BURST` | `20` | Bucket size, so short spikes up to this size pass. |
 | `JMAIL_HTTP_TIMEOUT` | `30s` | Overall deadline for one SMTP submission. |
 | `JMAIL_HTTP_DRAIN` | `2s` | How long a `SIGTERM` waits for in-flight submissions before exiting. Must stay below `S6_KILL_GRACETIME`. |
-| `JMAIL_HTTP_IDEMPOTENCY_TTL` | `1h` | How long an `Idempotency-Key` replay is remembered. |
+| `JMAIL_HTTP_IDEMPOTENCY_TTL` | `1h` | How long an `Idempotency-Key` replay, or a Supabase `webhook-id`, is remembered. |
 | `JMAIL_HTTP_IDEMPOTENCY_DIR` | `/var/lib/jmail-http` | Where replay records are written so they survive a restart. `off` keeps them in memory only. |
 | `JMAIL_HTTP_LOG_RATE` | `10` | Access-log lines per second, sampled with a token bucket. `0` logs every request. |
 | `JMAIL_HTTP_SUPABASE_HOOK_SECRET` | *(unset)* | Enables `POST /v1/hooks/supabase/send-email` for one project. Accepts the dashboard's `v1,whsec_<base64>` value or a bare base64 secret. |

@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,6 +46,10 @@ type supabaseHookPayload struct {
 		SiteURL         string `json:"site_url"`
 		TokenNew        string `json:"token_new"`
 		TokenHashNew    string `json:"token_hash_new"`
+		OldEmail        string `json:"old_email"`
+		OldPhone        string `json:"old_phone"`
+		Provider        string `json:"provider"`
+		FactorType      string `json:"factor_type"`
 	} `json:"email_data"`
 }
 
@@ -65,6 +70,11 @@ type hookMessage struct {
 	token     string
 	tokenHash string
 	redirect  string
+
+	// Notifications carry no token. Their subject and body lines are built from
+	// the change described in the payload.
+	subject string
+	lines   []string
 }
 
 // parseWebhookSecret accepts both forms Supabase shows: the full
@@ -136,6 +146,23 @@ func (c *config) supabaseMessages(p supabaseHookPayload) ([]hookMessage, error) 
 		return nil, fmt.Errorf("user.email is empty")
 	}
 
+	// Notifications describe a change that already happened. They carry no OTP
+	// and no token hash, so they must not go through the token flow below.
+	if subject, lines, ok := supabaseNotification(action, p); ok {
+		return []hookMessage{{to: p.User.Email, action: action, subject: subject, lines: lines}}, nil
+	}
+
+	// Reauthentication is verified as a nonce on the sensitive action, not by
+	// /auth/v1/verify, so the link its token hash would produce is dead. The OTP
+	// is the only thing the user can act on, which also means an absent hash is
+	// not an error.
+	if action == "reauthentication" {
+		if p.EmailData.Token == "" {
+			return nil, fmt.Errorf("email_data.token is empty for reauthentication")
+		}
+		return []hookMessage{{to: p.User.Email, action: action, token: p.EmailData.Token}}, nil
+	}
+
 	if action == "email_change" {
 		if p.EmailData.TokenHashNew != "" && p.EmailData.TokenHash != "" && p.User.NewEmail != "" {
 			return []hookMessage{
@@ -189,6 +216,96 @@ func supabaseSubject(action string) (subject, intro string) {
 	}
 }
 
+// supabaseNotification describes an account-change notification. GoTrue routes
+// these through the same hook, but they carry no token or token hash: the text
+// comes from the action and the change-specific fields in the payload.
+func supabaseNotification(action string, p supabaseHookPayload) (subject string, lines []string, ok bool) {
+	const secure = "If you did not make this change, secure your account and contact support immediately."
+	data := p.EmailData
+
+	switch action {
+	case "password_changed_notification":
+		return "Your password was changed", []string{
+			"The password for your account was changed.",
+			secure,
+		}, true
+
+	case "email_changed_notification":
+		line := "The email address for your account was changed."
+		if data.OldEmail != "" {
+			line = fmt.Sprintf("The email address for your account was changed from %s to %s.", data.OldEmail, p.User.Email)
+		}
+		return "Your email address was changed", []string{line, secure}, true
+
+	case "phone_changed_notification":
+		line := "The phone number for your account was changed."
+		if data.OldPhone != "" {
+			line = fmt.Sprintf("The phone number for your account was changed from %s.", data.OldPhone)
+		}
+		return "Your phone number was changed", []string{line, secure}, true
+
+	case "identity_linked_notification":
+		line := "A sign-in method was linked to your account."
+		if provider := strings.TrimSpace(data.Provider); provider != "" {
+			line = fmt.Sprintf("A %s sign-in method was linked to your account.", provider)
+		}
+		return "A sign-in method was linked", []string{line, secure}, true
+
+	case "identity_unlinked_notification":
+		line := "A sign-in method was removed from your account."
+		if provider := strings.TrimSpace(data.Provider); provider != "" {
+			line = fmt.Sprintf("A %s sign-in method was removed from your account.", provider)
+		}
+		return "A sign-in method was removed", []string{line, secure}, true
+
+	case "mfa_factor_enrolled_notification":
+		line := "A two-factor authentication method was added to your account."
+		if factor := strings.TrimSpace(data.FactorType); factor != "" {
+			line = fmt.Sprintf("A %s two-factor authentication method was added to your account.", factor)
+		}
+		return "Two-factor authentication was enabled", []string{line, secure}, true
+
+	case "mfa_factor_unenrolled_notification":
+		line := "A two-factor authentication method was removed from your account."
+		if factor := strings.TrimSpace(data.FactorType); factor != "" {
+			line = fmt.Sprintf("A %s two-factor authentication method was removed from your account.", factor)
+		}
+		return "Two-factor authentication was disabled", []string{line, secure}, true
+	}
+
+	// A notification type added after this build must not fail the hook forever,
+	// which is what falling through to the token flow would do.
+	if strings.HasSuffix(action, "_notification") {
+		return "Your account was updated", []string{
+			"A security-related setting on your account was changed.",
+			secure,
+		}, true
+	}
+
+	return "", nil, false
+}
+
+// composeNotificationBody renders the lines as paragraphs, so a value such as an
+// old address or a provider name cannot inject markup.
+func composeNotificationBody(lines []string) (text, bodyHTML string) {
+	var plain strings.Builder
+	plain.WriteString("Hi,\n\n")
+	for _, line := range lines {
+		plain.WriteString(line)
+		plain.WriteString("\n\n")
+	}
+	plain.WriteString("This is an automated security notice for your account.\n")
+
+	var markup strings.Builder
+	markup.WriteString("<p>Hi,</p>\n")
+	for _, line := range lines {
+		markup.WriteString("<p>" + html.EscapeString(line) + "</p>\n")
+	}
+	markup.WriteString("<p>This is an automated security notice for your account.</p>\n")
+
+	return plain.String(), markup.String()
+}
+
 // verifyURL builds the link Supabase Auth documents for the hook receiver. It
 // needs the project's API URL, which the payload does not carry.
 func (h supabaseHook) verifyURL(action, tokenHash, redirectTo string) string {
@@ -236,6 +353,17 @@ func composeSupabaseBody(intro, link, token string) (text, bodyHTML string) {
 }
 
 func (h supabaseHook) request(m hookMessage) (*sendRequest, error) {
+	if m.subject != "" {
+		text, bodyHTML := composeNotificationBody(m.lines)
+		return &sendRequest{
+			From:    h.from,
+			To:      []string{m.to},
+			Subject: m.subject,
+			Text:    text,
+			HTML:    bodyHTML,
+		}, nil
+	}
+
 	link := h.verifyURL(m.action, m.tokenHash, m.redirect)
 	if link == "" && m.token == "" {
 		return nil, fmt.Errorf("no confirmation link and no token to send")
@@ -266,6 +394,43 @@ func (s *server) queueMessage(ctx context.Context, req *sendRequest) (string, er
 	return s.submitter.submit(ctx, envelope.from.Address, envelope.recipients(), message)
 }
 
+// queueHookMessage sends one message unless an earlier attempt for the same
+// webhook-id already sent it. Each message has its own entry, so a retry after a
+// partial secure email change skips the half that was queued and sends only the
+// other one.
+func (s *server) queueHookMessage(ctx context.Context, hook supabaseHook, m hookMessage, key string) (alreadySent bool, err error) {
+	entry, owner := s.idem.begin(key, s.now())
+	if !owner {
+		if cached := entry.wait(ctx); cached != nil {
+			return true, nil
+		}
+		if ctx.Err() != nil {
+			return false, ctx.Err()
+		}
+		return false, newAPIError(http.StatusConflict, "idempotency_conflict",
+			"a request with this webhook-id failed while in flight, retry to send again")
+	}
+
+	settled := false
+	defer func() {
+		if !settled {
+			s.idem.abort(entry)
+		}
+	}()
+
+	req, err := hook.request(m)
+	if err != nil {
+		return false, newAPIError(http.StatusUnprocessableEntity, "invalid_request", "%s", err.Error())
+	}
+	if _, err := s.queueMessage(ctx, req); err != nil {
+		return false, err
+	}
+
+	s.idem.finish(entry, cachedResponse{status: http.StatusOK, body: []byte("{}")})
+	settled = true
+	return false, nil
+}
+
 // matchSupabaseHook returns the project whose secret verifies the signature.
 // Each Supabase project signs with its own secret, which is also what selects
 // the project URL and sender for the reply.
@@ -282,6 +447,19 @@ func (c *config) matchSupabaseHook(id, timestamp, signatures string, body []byte
 		lastErr = fmt.Errorf("no Supabase hook is configured")
 	}
 	return supabaseHook{}, lastErr
+}
+
+// supabaseDedupeKey scopes a webhook-id to its project and hashes it. Supabase
+// retries with the same webhook-id after a timeout, and remembering it is what
+// keeps a lost 200 from producing a second email. Hashing keeps an arbitrarily
+// long header from becoming a large map key.
+//
+// The leading NUL keeps these keys out of the namespace a client can send as
+// Idempotency-Key: Go's HTTP server rejects header values containing NUL, so a
+// /v1/send key can never collide with one of these.
+func supabaseDedupeKey(project, webhookID string) string {
+	sum := sha256.Sum256([]byte(project + "\x00" + webhookID))
+	return "\x00supabase:" + hex.EncodeToString(sum[:])
 }
 
 func (s *server) handleSupabaseSendEmail(w http.ResponseWriter, r *http.Request) {
@@ -310,6 +488,37 @@ func (s *server) handleSupabaseSendEmail(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// The signature is what authenticates the webhook-id, so dedupe starts here.
+	// A failed attempt aborts the entry, which lets Supabase retry a real error
+	// instead of replaying the failure.
+	dedupeKey := supabaseDedupeKey(hook.name, r.Header.Get("webhook-id"))
+	entry, owner := s.idem.begin(dedupeKey, s.now())
+	if !owner {
+		if cached := entry.wait(r.Context()); cached != nil {
+			slog.Info("supabase hook duplicate",
+				"id", id,
+				"project", hook.name,
+				"webhook_id", r.Header.Get("webhook-id"),
+			)
+			writeCached(w, *cached)
+			return
+		}
+		if r.Context().Err() != nil {
+			writeError(w, id, http.StatusServiceUnavailable, "submission_canceled", "the request was canceled")
+			return
+		}
+		writeError(w, id, http.StatusConflict, "idempotency_conflict",
+			"a request with this webhook-id failed while in flight, retry to send again")
+		return
+	}
+
+	settled := false
+	defer func() {
+		if !settled {
+			s.idem.abort(entry)
+		}
+	}()
+
 	var payload supabaseHookPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
 		writeError(w, id, http.StatusBadRequest, "invalid_json", "request body is not valid JSON")
@@ -328,13 +537,10 @@ func (s *server) handleSupabaseSendEmail(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	for _, m := range messages {
-		req, err := hook.request(m)
+	for i, m := range messages {
+		alreadySent, err := s.queueHookMessage(r.Context(), hook, m,
+			fmt.Sprintf("%s:msg:%d", dedupeKey, i))
 		if err != nil {
-			writeError(w, id, http.StatusUnprocessableEntity, "invalid_request", err.Error())
-			return
-		}
-		if _, err := s.queueMessage(r.Context(), req); err != nil {
 			var apiErr *apiError
 			if errors.As(err, &apiErr) {
 				writeError(w, id, apiErr.Status, apiErr.Code, apiErr.Message)
@@ -344,6 +550,13 @@ func (s *server) handleSupabaseSendEmail(w http.ResponseWriter, r *http.Request)
 			writeSubmitFailure(w, id, r.Context(), err)
 			return
 		}
+		if alreadySent {
+			slog.Info("supabase hook message already sent",
+				"id", id,
+				"project", hook.name,
+				"index", i,
+			)
+		}
 	}
 
 	slog.Info("supabase hook accepted",
@@ -352,6 +565,10 @@ func (s *server) handleSupabaseSendEmail(w http.ResponseWriter, r *http.Request)
 		"action", payload.EmailData.EmailActionType,
 		"messages", len(messages),
 	)
-	// Supabase only requires a 2xx; the documented output is empty.
+	// Supabase only requires a 2xx; the documented output is empty. The body is
+	// recorded before it is written so a retry with the same webhook-id replays
+	// this acknowledgement instead of sending the mail again.
+	s.idem.finish(entry, cachedResponse{status: http.StatusOK, body: []byte("{}")})
+	settled = true
 	writeJSON(w, http.StatusOK, struct{}{})
 }

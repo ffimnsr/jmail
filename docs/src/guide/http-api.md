@@ -257,15 +257,22 @@ that does not match it, or a timestamp more than five minutes from the server cl
 
 ### What it sends
 
-The subject and body are generated from `email_data.email_action_type`: signup, recovery, invite, magiclink,
-email_change and reauthentication each get their own wording. The body contains the confirmation link when
-`JMAIL_HTTP_SUPABASE_URL` is set, plus the numeric code from the payload as a fallback.
+The subject and body are generated from `email_data.email_action_type`. Signup, recovery, invite, magiclink and
+email_change get a confirmation link when `JMAIL_HTTP_SUPABASE_URL` is set, plus the numeric code from the payload as a
+fallback. Reauthentication is code-only: Supabase verifies that OTP as a nonce on the sensitive action, and its
+`/auth/v1/verify` endpoint does not accept `type=reauthentication`, so a link would be dead. Password, email, phone,
+identity and MFA notifications are rendered from `old_email`, `old_phone`, `provider` and `factor_type`; they carry no
+link and no code.
 
 With Secure Email Change enabled Supabase sends two hashes, and its field names are reversed: `token_hash_new` belongs
 to the current address and `token_hash` to the new one. Two messages are queued, each with the code for its recipient.
 
-Every message is queued before the endpoint answers `200 {}`, so Supabase retries a delivery that failed. It is not
-de-duplicated by `webhook-id`, so a retry after a lost `200` can send the same email twice.
+Every message is queued before the endpoint answers `200 {}`, so Supabase retries a delivery that failed or whose reply
+was lost. Retries are de-duplicated by `webhook-id`, scoped to the project that signed the request, for
+`JMAIL_HTTP_IDEMPOTENCY_TTL`; a duplicate replays the original `200` and sends nothing. An attempt that fails releases
+the id, so a retry after a real error is processed normally. Each message in a secure email change is remembered
+separately, so if the second fails after the first was queued, the retry sends only the second. As with
+`Idempotency-Key`, a crash between handing a message to Postfix and recording it can still duplicate that message.
 
 ### Behind a tunnel or reverse proxy
 
