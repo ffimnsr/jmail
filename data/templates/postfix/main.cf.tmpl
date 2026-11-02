@@ -14,8 +14,16 @@ smtpd_banner = $myhostname ESMTP
 smtpd_delay_reject = yes
 smtpd_relay_restrictions = permit_mynetworks permit_sasl_authenticated reject
 smtpd_recipient_restrictions = permit_mynetworks permit_sasl_authenticated reject
+# An authenticated client may only use a From: address at a domain this image
+# signs. OpenDKIM has no key for anything else, so a leaked SMTP credential
+# should not be usable to send as an arbitrary domain. permit_mynetworks comes
+# first because jmail-http submits over the loopback and has its own sender
+# policy. The map is rendered at startup from JMAIL_ORIGIN and JMAIL_DOMAINS.
+smtpd_sender_restrictions = permit_mynetworks, check_sender_access regexp:/etc/postfix/sender_access.regexp, reject
 smtpd_tls_cert_file = /etc/postfix/ssl/server.crt
 smtpd_tls_key_file = /etc/postfix/ssl/server.key
+# Port 25 carries plaintext loopback submissions from jmail-http, so the TLS
+# requirement lives on the submission service in master.cf instead.
 smtpd_tls_security_level = may
 smtpd_tls_session_cache_database = lmdb:${data_directory}/smtpd_scache
 smtpd_tls_auth_only = yes

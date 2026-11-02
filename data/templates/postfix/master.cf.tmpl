@@ -6,7 +6,12 @@ smtp       inet  n       -       n       -       1       postscreen
 smtpd      pass  -       -       n       -       -       smtpd
 dnsblog    unix  -       -       n       -       0       dnsblog
 tlsproxy   unix  -       -       n       -       0       tlsproxy
-submission inet  n       -       n       -       -       smtpd -o syslog_name=postfix/submissions
+# TLS is required on submission. This is per-service rather than global: port 25
+# is the plaintext loopback path used by jmail-http, and it must keep working.
+submission inet  n       -       n       -       -       smtpd
+  -o syslog_name=postfix/submissions
+  -o smtpd_tls_security_level=encrypt
+  -o smtpd_tls_mandatory_protocols=>=TLSv1.2
 #628       inet  n       -       n       -       -       qmqpd
 pickup     unix  n       -       n       60      1       pickup
 cleanup    unix  n       -       n       -       0       cleanup

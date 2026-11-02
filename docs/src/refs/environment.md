@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | `JMAIL_HOSTNAME` | `example.com` | Postfix `myhostname`: SMTP banner and `smtpd_sasl_local_domain`. |
 | `JMAIL_ORIGIN` | `example.com` | The primary domain: Postfix `myorigin`, the default OpenDKIM signing domain, the SASL realm, and the generated TLS certificate's CN. |
-| `JMAIL_DOMAINS` | *(unset)* | Additional domains to sign, space or comma separated. `JMAIL_ORIGIN` is always included and stays primary, so a single-domain setup can leave this unset. |
+| `JMAIL_DOMAINS` | *(unset)* | Additional domains to sign, space or comma separated. `JMAIL_ORIGIN` is always included and stays primary, so a single-domain setup can leave this unset. Together with `JMAIL_ORIGIN` it also forms the `From:` allowlist for authenticated submission. |
 | `JMAIL_ROOT_EMAIL` | `user@example.com` | Destination of the `root` alias and of `/usr/local/bin/test-mail.sh`. |
 | `JMAIL_SMTP_USER` | `jmail` | SASL username created at startup. |
 | `JMAIL_SMTP_PASSWORD` | `mysecretpassword` | SASL password for `JMAIL_SMTP_USER`. |

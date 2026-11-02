@@ -48,6 +48,18 @@ for domain in ${JMAIL_DOMAINS//,/ }; do
 done
 export JMAIL_DOMAINS_CSV
 
+# Authenticated clients may only use a From: address at a domain this image
+# signs: OpenDKIM has no key for anything else, and a leaked SMTP credential
+# should not be usable to send as an arbitrary domain. main.cf applies this map
+# after permit_mynetworks, so submissions from the container itself (jmail-http
+# over loopback) are unaffected.
+sender_alternation=""
+for domain in ${JMAIL_DOMAINS_CSV//,/ }; do
+  sender_alternation="${sender_alternation:+$sender_alternation|}$(printf '%s' "$domain" | sed 's/\./\\./g')"
+done
+printf '/^.*@(%s)$/ OK\n' "$sender_alternation" >/etc/postfix/sender_access.regexp
+chmod 0644 /etc/postfix/sender_access.regexp
+
 echo "Signing DKIM for: $JMAIL_DOMAINS_CSV"
 
 TEMPLATES_DIR=/etc/templates

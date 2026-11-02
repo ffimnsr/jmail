@@ -17,6 +17,7 @@ adding a domain never needs a new A record or a new PTR — it needs TXT records
 | HTTP API sender policy | Every domain, by default |
 | `A` record / `PTR` | **Unchanged** — one pair for the sending IP |
 | SASL account | **Unchanged** — one credential, usable for every domain |
+| Submission sender policy | Every domain, by default |
 | `MX` / inbound mail | **Unchanged** — still none; jmail stays outbound-only |
 
 `JMAIL_ORIGIN` remains the **primary** domain. It is always part of the list and is what gets used wherever a single

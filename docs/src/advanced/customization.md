@@ -112,7 +112,7 @@ COPY main.cf.tmpl /etc/templates/postfix/main.cf.tmpl
 configurable instead of hardcoded:
 
 ```
-{{ if eq (env "JMAIL_TLS_LEVEL") "encrypt" }}smtpd_tls_security_level = encrypt{{ else }}smtpd_tls_security_level = may{{ end }}
+{{ if env "JMAIL_MAX_MESSAGE_SIZE" }}message_size_limit = {{ env "JMAIL_MAX_MESSAGE_SIZE" }}{{ else }}message_size_limit = 10240000{{ end }}
 ```
 
 Note it is `env "NAME"`, not `getenv`.

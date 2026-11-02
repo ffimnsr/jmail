@@ -84,6 +84,8 @@ podman run -d --name jmail \
 - Add more domains with `-e JMAIL_DOMAINS='example.com,other.example'`. Each one gets its own DKIM key, certificate
   SAN and signing-table entry; `JMAIL_ORIGIN` is always included, so listing it again is harmless.
 - If port `587` is taken, or you run rootless, publish a higher port instead, for example `-p 10587:587`.
+- Submission requires STARTTLS, and an authenticated client may only send as a domain jmail signs. Before publishing
+  the port beyond the host, read [Exposing submission](docs/src/advanced/exposing-submission.md).
 - On Docker, use `docker run` and drop the `:z` suffixes. Those relabel the mounts for SELinux.
 
 Then watch the logs:

@@ -74,6 +74,10 @@ Its rendered files are rewritten from the templates on every start, which is why
 Most deployments only publish `587`, for example `-p 10587:587` if the host already uses `587`. Publishing port
 `25` is only useful if another mail server should relay through jmail.
 
+Submission requires STARTTLS, and an authenticated client may only use a `From:` address at a domain jmail signs. When
+the port is reachable from another network, work through [Exposing submission](../advanced/exposing-submission.md)
+first.
+
 ### Check the logs
 
 ```sh

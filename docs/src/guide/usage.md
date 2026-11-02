@@ -14,8 +14,14 @@ Use these settings in your application, mail client or another mail server:
 
 The account is created in the SASL database under the `JMAIL_ORIGIN` realm, so `JMAIL_SMTP_USER` and
 `user@JMAIL_ORIGIN` both authenticate. Authentication is only offered after STARTTLS
-(`smtpd_tls_auth_only = yes`), so clients must upgrade the connection before logging in. One account covers every
-domain in `JMAIL_DOMAINS`: domains are signing identities, not users, and there is no per-domain credential.
+(`smtpd_tls_auth_only = yes`), and the `submission` service requires TLS outright, so a plaintext client is refused
+with `530 5.7.0 Must issue a STARTTLS command first`. One account covers every domain in `JMAIL_DOMAINS`: domains are
+signing identities, not users, and there is no per-domain credential.
+
+An authenticated client may only use a `From:` address at `JMAIL_ORIGIN` or one of `JMAIL_DOMAINS`; anything else is
+rejected at `RCPT TO` with `554 5.7.1 Sender address rejected`. That keeps a leaked credential from being usable to
+send as an arbitrary domain. Before opening the port to another network, read
+[Exposing submission](../advanced/exposing-submission.md).
 
 Relaying is only permitted for authenticated clients and for the networks listed in `JMAIL_MYNETWORKS`. It defaults to
 `127.0.0.0/8`, which means only the container itself; everything else has to authenticate.
@@ -199,6 +205,11 @@ curl -fsSL https://raw.githubusercontent.com/ffimnsr/jmail/master/scripts/check-
 
 - **Authentication fails.** `JMAIL_SMTP_USER` and `JMAIL_SMTP_PASSWORD` are applied when the container starts;
   changing them in an existing container has no effect. Recreate it.
+- **`530 5.7.0 Must issue a STARTTLS command first`.** Submission requires TLS. Configure the client for STARTTLS on
+  port `587` (or the published port); plaintext submission is refused on purpose.
+- **`554 5.7.1 Sender address rejected`.** The `From:` address is not at `JMAIL_ORIGIN` or a domain in `JMAIL_DOMAINS`.
+  Add the domain to `JMAIL_DOMAINS`, which gives it a DKIM key too, or send as a domain jmail signs. `RCPT TO` reports
+  the rejection because `smtpd_delay_reject = yes`.
 - **Messages are deferred.** With `smtp_tls_security_level = encrypt`, jmail refuses to deliver in plaintext. Check
   the log for the remote server's TLS error.
 - **`postfix status` from inside the container** reports the running state, and

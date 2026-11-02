@@ -12,6 +12,7 @@
 
 - [Customization](advanced/customization.md)
 - [Multiple domains](advanced/multiple-domains.md)
+- [Exposing submission](advanced/exposing-submission.md)
 
 # Reference Guide
 
