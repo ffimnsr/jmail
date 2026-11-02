@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.19 - 2026-11-02
+
+### Features
+
+- add response signing (`46b71bf`)
+
+### Maintenance
+
+- update install script to output properly (`efc4712`)
+
 ## 1.0.18 - 2026-11-02
 
 ### Features
