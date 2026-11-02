@@ -47,11 +47,14 @@ podman run -d --name jmail \
   ghcr.io/ffimnsr/jmail:latest
 ```
 
-Rate limits are another common one, and worth setting if an SMTP credential ever leaks:
+The submission limits are defaults, so overriding one is a normal reason to reach for this directory:
 
 ```sh
-smtpd_client_message_rate_limit = 60
-smtpd_client_connection_rate_limit = 30
+/etc/jmail/postfix.d/20-limits.conf
+
+# A sender that legitimately bursts needs more than 60 messages a minute.
+smtpd_client_message_rate_limit = 600
+smtpd_client_recipient_rate_limit = 1000
 ```
 
 An override that does not apply is treated as an error. `postconf` itself only warns about an unknown parameter and

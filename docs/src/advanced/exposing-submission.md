@@ -4,7 +4,7 @@ By default the submission port is only useful from the host it runs on. When a m
 has to send through it — Supabase Auth's SMTP settings, a CI job, an application on another VPS — the port becomes
 internet-facing and has to be treated like one.
 
-Two protections are built in, so nobody has to remember them:
+Three protections are built in, so nobody has to remember them:
 
 - Submission **requires STARTTLS**. The `submission` service runs with `smtpd_tls_security_level = encrypt`, so a
   plaintext client is refused with `530 5.7.0 Must issue a STARTTLS command first`, and `smtpd_tls_auth_only = yes`
@@ -14,8 +14,12 @@ Two protections are built in, so nobody has to remember them:
   `RCPT TO`, because `smtpd_delay_reject = yes`). The allowlist is a `regexp:` map rendered at startup, so adding a
   domain to `JMAIL_DOMAINS` also allows it on submission. `permit_mynetworks` is applied first, which keeps the HTTP
   API's loopback submission unaffected.
+- Submission is **rate-limited per client address**: 10 concurrent connections, 30 connections and 60 messages per
+  minute, 100 recipients per minute, with soft and hard error limits at 10 and 20. The limits live in `main.cf`, so a
+  `postfix.d` override changes them without a rebuild. Clients in `JMAIL_MYNETWORKS` are exempt through
+  `smtpd_client_event_limit_exceptions`, which is why the HTTP API's loopback submissions are not throttled.
 
-The rest of this page is deployment work: firewall, certificate, credentials, rate limits, brute-force protection.
+The rest of this page is deployment work: firewall, certificate, credentials, brute-force protection.
 
 ## 1. Open the port
 
@@ -112,25 +116,7 @@ Use `supabase` as the SMTP username. Remove the variable (or the hook) and resta
 `JMAIL_SMTP_PASSWORD`, the value is visible to anyone who can run `podman inspect`, so treat it as a secret with the
 same care.
 
-## 4. Rate-limit what a leaked credential can do
-
-`$HOME/.local/share/jmail/postfix.d/20-limits.conf`:
-
-```
-smtpd_client_connection_count_limit = 10
-smtpd_client_connection_rate_limit = 30
-smtpd_client_message_rate_limit = 60
-smtpd_client_recipient_rate_limit = 100
-anvil_rate_time_unit = 60s
-smtpd_soft_error_limit = 10
-smtpd_hard_error_limit = 20
-```
-
-The limits are per client address, so they blunt brute force and single-source floods rather than a distributed
-attacker. Raise `smtpd_client_message_rate_limit` if the sender legitimately bursts, and lower `message_size_limit`
-(10 MB by default) if nothing you send is large.
-
-## 5. Ban brute force
+## 4. Ban brute force
 
 The stock `postfix` fail2ban filter does not match this image's log lines: Postfix writes its own timestamped prefix
 and the service is `postfix/submissions`. Use a filter that matches what the container actually logs:
@@ -163,7 +149,7 @@ sudo fail2ban-client status jmail-sasl
 `CONTAINER_NAME=jmail` is the journal field to match. Include the server's own public IP in `ignoreip`: submissions
 made on the host are logged with that address, so a mistyped password in a local test would otherwise ban you.
 
-## 6. Check it from outside
+## 5. Check it from outside
 
 ```sh
 # The certificate must verify for the name the client uses.

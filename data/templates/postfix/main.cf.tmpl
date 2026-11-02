@@ -20,6 +20,18 @@ smtpd_recipient_restrictions = permit_mynetworks permit_sasl_authenticated rejec
 # first because jmail-http submits over the loopback and has its own sender
 # policy. The map is rendered at startup from JMAIL_ORIGIN and JMAIL_DOMAINS.
 smtpd_sender_restrictions = permit_mynetworks, check_sender_access regexp:/etc/postfix/sender_access.regexp, reject
+# Anti-abuse limits for clients that authenticate and relay. Hosts in
+# mynetworks are exempt from the client_*_limit parameters through
+# smtpd_client_event_limit_exceptions, so the container's own loopback
+# submissions from jmail-http are not throttled; only remote clients are.
+# Raise them with a postfix.d override if a sender legitimately bursts.
+smtpd_client_connection_count_limit = 10
+smtpd_client_connection_rate_limit = 30
+smtpd_client_message_rate_limit = 60
+smtpd_client_recipient_rate_limit = 100
+anvil_rate_time_unit = 60s
+smtpd_soft_error_limit = 10
+smtpd_hard_error_limit = 20
 smtpd_tls_cert_file = /etc/postfix/ssl/server.crt
 smtpd_tls_key_file = /etc/postfix/ssl/server.key
 # Port 25 carries plaintext loopback submissions from jmail-http, so the TLS
