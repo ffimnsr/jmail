@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.20 - 2026-11-02
+
+### Features
+
+- update duplicity on messages (`9e7f04d`)
+
 ## 1.0.19 - 2026-11-02
 
 ### Features
