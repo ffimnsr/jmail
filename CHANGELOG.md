@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.21 - 2026-11-02
+
+### Features
+
+- update jmail for new mail setup template (`e94a0d3`)
+
 ## 1.0.20 - 2026-11-02
 
 ### Features
