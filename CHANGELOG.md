@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.0.18 - 2026-11-02
+
+### Features
+
+- add install script (`13774d5`)
+- add script for check-dns for mail (`ce90426`)
+- require TLS and restrict senders on submission (`4eec2ac`)
+- update template for rate limit (`072d22f`)
+- Supabase Auth email hook (`a014d48`)
+- add support for multiple users of supabase domain (`9ec411e`)
+
+### Fixes
+
+- script problems (`e4c6ea4`)
+- update check-dns script (`ffbc5bd`)
+- update check-dns script on dkim checker (`ffe49d8`)
+- update script check-dns to fix some issues (`f68433b`)
+
+### Maintenance
+
+- add new script for sending email (`204cf4c`)
+- update reconfigure on installer (`a79ddbf`)
+
 ## 1.0.17 - 2026-11-01
 
 ### CI
